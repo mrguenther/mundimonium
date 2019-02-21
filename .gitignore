@@ -3,3 +3,4 @@
 *.code-workspace
 *.sublime-workspace
 *.sublime-project
+.vscode/*

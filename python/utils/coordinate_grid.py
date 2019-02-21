@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import numpy as np
 from enum import Enum
 from distance_unit import DistanceUnit
@@ -28,6 +30,26 @@ class CoordinateGrid:
 		Calculates the distance between two points in the grid, given as coordinate-pair tuples.
 		"""
 		raise NotImplementedError("Requires a coordinate system.")
+
+class CartesianPoint:
+	"""
+	A point in a 3d CartesianGrid
+
+	Attributes:
+		coords {tuple[float, float, float]}
+	"""
+
+	def __init__(self, location: Tuple[float, float, float]):
+		"""
+		Create the point at a location
+
+		Arguments:
+			location {Tuple[float, float, float]} 
+				-- Point creation location
+		"""
+
+		self.coords = location
+
 
 
 class CartesianGrid(CoordinateGrid):
