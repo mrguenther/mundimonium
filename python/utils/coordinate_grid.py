@@ -8,8 +8,8 @@ class CoordinateSpace(Enum):
 	Enum for specifying the coordinate space of a grid.
 	"""
 
-	CARTESIAN = auto()
-	SPHERICAL = auto()
+	CARTESIAN = Enum.auto()
+	SPHERICAL = Enum.auto()
 
 
 class CoordinateGrid:
@@ -21,9 +21,9 @@ class CoordinateGrid:
 	coordinateSpace = None
 
 	def __init__(self):
-		self.distanceUnit = defaultDistanceUnit
+		self.distanceUnit = self.defaultDistanceUnit
 
-	def distance(pt1, pt2):
+	def distance(self, pt1, pt2):
 		"""
 		Calculates the distance between two points in the grid, given as coordinate-pair tuples.
 		"""
@@ -38,7 +38,7 @@ class CartesianGrid(CoordinateGrid):
 	def __init__(self):
 		self.coordinateSpace = CoordinateSpace.CARTESIAN
 
-	def distance(pt1, pt2):
+	def distance(self, pt1, pt2):
 		"""
 		Calculates the distance between two points in the grid, given as coordinate-pair tuples.
 		"""
@@ -56,7 +56,7 @@ class SphericalGrid(CoordinateGrid):
 		self.coordinateSpace = CoordinateSpace.SPHERICAL
 		self.sphereRadius = sphereRadius # Radius in self.distanceUnit
 
-	def distance(pt1, pt2):
+	def distance(self, pt1, pt2):
 		"""
 		Calculates the distance between two points in the grid, given as coordinate-pair tuples.
 		"""
