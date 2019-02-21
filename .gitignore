@@ -1,0 +1,5 @@
+*.swp
+*.pyc
+*.code-workspace
+*.sublime-workspace
+*.sublime-project
