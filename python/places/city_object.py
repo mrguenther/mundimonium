@@ -1,5 +1,9 @@
 #!/usr/local/bin/python36
 
+# TODO: Delete this file, as it is now extraneous
+# It remains for now as it may still have useful bits to pull into other files
+# But your days are numbered, city_object.py
+
 from typing import Tuple, List, Optional
 
 from utils_win.coordinate_grid import CartesianPoint
@@ -17,9 +21,9 @@ class CityObject(CartesianPoint):
             -- The object's location
         args {dict}
             -- The arguments with which to call locationFactor.determineValue
-        locationFactors {list [locationFactor {LocationSelectionProperty}]}
+        locationFactors {list [locationFactor {SelectionProperty}]}
             -- The factors to be evaluated when checking a location's suitability
-                locationFactor is a generic for a subclass of LocationSelectionProperty
+                locationFactor is a generic for a subclass of SelectionProperty
         locationWeights {numpy.array}
             -- The array of weights associated with each locationFactor
     """
@@ -81,7 +85,7 @@ class CityObject(CartesianPoint):
 
 
 
-class LocationSelectionProperty:
+class SelectionProperty:
     """
     Base class for properties that influence the selection of locations.
     Most objects in the city will have a list of properties that must be considered when determining placement.
@@ -102,7 +106,7 @@ class LocationSelectionProperty:
             objectSelecting {CityObject} 
                 -- The object determining the value at the location
             args {dict}
-                -- Dictionary of all args that might be passed to children of LocationSelectionProperty
+                -- Dictionary of all args that might be passed to children of SelectionProperty
 
         Returns:
             valueMultiplier {float} 
@@ -112,7 +116,7 @@ class LocationSelectionProperty:
         raise NotImplementedError
 
 
-class DistanceToRoadSelection(LocationSelectionProperty):
+class DistanceToRoadSelection(SelectionProperty):
     """
     Class for determining the influence of the distance to the nearest road for a location.
     This should be weighted significantly more for certain buildings, such as residences.

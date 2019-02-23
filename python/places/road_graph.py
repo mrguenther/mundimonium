@@ -1,14 +1,8 @@
 from typing import Tuple, Optional
 
-from utils.coordinate_grid import CartesianPoint
-from city_object import CityObject
+from utils_win.coordinate_grid import CartesianPoint
 
 import networkx
-
-
-class RoadPoint(CityObject):
-    pass
-
 
 class RoadGraph:
     """Road network object

@@ -1,8 +1,8 @@
 from typing import Tuple
 
 import numpy as np
-from enum import Enum
-from distance_unit import DistanceUnit
+from enum import Enum, auto
+from utils_win.distance_unit import DistanceUnit
 
 
 class CoordinateSpace(Enum):
@@ -10,8 +10,8 @@ class CoordinateSpace(Enum):
 	Enum for specifying the coordinate space of a grid.
 	"""
 
-	CARTESIAN = Enum.auto()
-	SPHERICAL = Enum.auto()
+	CARTESIAN = auto()
+	SPHERICAL = auto()
 
 
 class CoordinateGrid:
