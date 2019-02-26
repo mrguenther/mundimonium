@@ -70,6 +70,26 @@ class DetermineTerrain(PropertyFunction):
 
         raise NotImplementedError("This is not an abstract class, it's just not written yet.")
 
+class DetermineCreator(PropertyFunction):
+    """
+    Class for determining what object created the calling object (by calling its CreationTrigger)
+        If the object was created by an Ordered trigger, the creator will be its parent layer
+        Otherwise, this returns the object that called the OnCalled trigger
+    """
+
+    def determineValue(
+        self,
+        caller: 'ExtensibleObject') -> 'ExtensibleObject':
+        """
+        Find the object that created caller
+
+        Returns:
+            creator {ExtensibleObject}
+                -- The object that created caller 
+        """
+
+        raise NotImplementedError("This is not an abstract class, it's just not written yet.")
+
 
 class PropertyFunctionManager:
     """
@@ -84,4 +104,5 @@ class PropertyFunctionManager:
 
     propertyFunctions = {
         "DetermineRoadNetwork": DetermineRoadNetwork, 
-        "DetermineTerrain": DetermineTerrain}
+        "DetermineTerrain": DetermineTerrain,
+        "DetermineCreator": DetermineCreator}

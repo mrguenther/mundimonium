@@ -9,6 +9,7 @@
             "Properties": {
             }
         },
+        
         "RoadPoint": {
             "Type": "PointObject",
             "CreationTrigger": {
@@ -26,6 +27,7 @@
             "SelectionFactors": {
             }
         },
+
         "CityTerrain": {
             "Type": "TerrainObject",
             "CreationTrigger": {
@@ -35,17 +37,24 @@
             "Properties": {
             }
         },
+
         "Residence": {
             "Type": "PointObject",
             "CreationTrigger": {
                 "TriggerType": "OnCalled",
                 "TriggerName": "AddResidence"
             },
+            "AfterCreation": [
+                "AddRoadPoint"
+            ],
             "Properties": {
                 "maxGrade": {
                     "Origin": "Static",
-                    "Value": 15,
-                    "Unit": "Percent"
+                    "Value": 15
+                },
+                "maxGradeUnit": {
+                    "Origin": "Static",
+                    "Value": "Percent"
                 },
                 "associatedNetwork": {
                     "Origin": "PropertyFunction",

@@ -1,3 +1,7 @@
+# TODO: Delete this file, as it is now extraneous (and missed in the last purge)
+# It remains for now as it may still have useful bits to pull into other files
+# But your days are just as numbered as city_object.py's, road_graph.py
+
 from typing import Tuple, Optional
 
 from utils_win.coordinate_grid import CartesianPoint
