@@ -1,88 +1,86 @@
 {
-    "ExtensibleObjects": {
-        "RoadNetwork": {
-            "Type": "NetworkObject",
-            "CreationTrigger": {
-                "TriggerType": "Ordered",
-                "TriggerOrder": 1
-            },
-            "Properties": {
-            }
-        },
-        
-        "RoadPoint": {
-            "Type": "PointObject",
-            "CreationTrigger": {
-                "TriggerType": "OnCalled",
-                "TriggerName": "AddRoadPoint"
-            },
-            "Properties": {
-                "associatedNetwork": {
-                    "Origin": "PropertyFunction",
-                    "PropertyFunction": "DetermineRoadNetwork",
-                    "args": {},
-                    "Value": null
-                }
-            },
-            "SelectionFactors": {
-            }
-        },
+	"RoadNetwork": {
+		"Type": "NetworkObject",
+		"CreationTrigger": {
+			"TriggerType": "Ordered",
+			"TriggerOrder": 1
+		},
+		"Properties": {
+		}
+	},
+	
+	"RoadPoint": {
+		"Type": "PointObject",
+		"CreationTrigger": {
+			"TriggerType": "OnCalled",
+			"TriggerName": "AddRoadPoint"
+		},
+		"Properties": {
+			"associatedNetwork": {
+				"Origin": "PropertyFunction",
+				"PropertyFunction": "DetermineRoadNetwork",
+				"args": {},
+				"Value": null
+			}
+		},
+		"SelectionFactors": {
+		}
+	},
 
-        "CityTerrain": {
-            "Type": "TerrainObject",
-            "CreationTrigger": {
-                "TriggerType": "Ordered",
-                "TriggerOrder": 0
-            },
-            "Properties": {
-            }
-        },
+	"CityTerrain": {
+		"Type": "TerrainObject",
+		"CreationTrigger": {
+			"TriggerType": "Ordered",
+			"TriggerOrder": 0
+		},
+		"Properties": {
+		}
+	},
 
-        "Residence": {
-            "Type": "PointObject",
-            "CreationTrigger": {
-                "TriggerType": "OnCalled",
-                "TriggerName": "AddResidence"
-            },
-            "AfterCreation": [
-                "AddRoadPoint"
-            ],
-            "Properties": {
-                "maxGrade": {
-                    "Origin": "Static",
-                    "Value": 15
-                },
-                "maxGradeUnit": {
-                    "Origin": "Static",
-                    "Value": "Percent"
-                },
-                "associatedNetwork": {
-                    "Origin": "PropertyFunction",
-                    "PropertyFunction": "DetermineRoadNetwork",
-                    "args": {},
-                    "Value": null
-                },
-                "associatedTerrain": {
-                    "Origin": "PropertyFunction",
-                    "PropertyFunction": "DetermineTerrain",
-                    "args": {},
-                    "Value": null
-                }
-            },
-            "SelectionFactors": {
-                "RoadDistance": {
-                    "Origin": "SelectionProperty",
-                    "SelectionProperty": "DistanceToRoadSelection",
-                    "args": {},
-                    "FactorWeight": 4.0
-                },
-                "MarketDistance": {
-                    "Origin": "SelectionProperty",
-                    "SelectionProperty": "DistanceToMarketSelection",
-                    "args": {},
-                    "FactorWeight": 2.0
-                }
-            }
-        }
-    }
+	"Residence": {
+		"Type": "PointObject",
+		"CreationTrigger": {
+			"TriggerType": "OnCalled",
+			"TriggerName": "AddResidence"
+		},
+			"AfterCreation": [
+			"AddRoadPoint"
+		],
+		"Properties": {
+			"maxGrade": {
+				"Origin": "Static",
+				"Value": 15
+			},
+			"maxGradeUnit": {
+				"Origin": "Static",
+				"Value": "Percent"
+			},
+			"associatedNetwork": {
+				"Origin": "PropertyFunction",
+				"PropertyFunction": "DetermineRoadNetwork",
+				"args": {},
+				"Value": null
+			},
+			"associatedTerrain": {
+				"Origin": "PropertyFunction",
+				"PropertyFunction": "DetermineTerrain",
+				"args": {},
+				"Value": null
+			}
+		},
+		"SelectionFactors": {
+			"RoadDistance": {
+				"Origin": "SelectionProperty",
+				"SelectionProperty": "DistanceToRoadSelection",
+				"args": {},
+				"FactorWeight": 4.0
+			},
+			"MarketDistance": {
+				"Origin": "SelectionProperty",
+				"SelectionProperty": "DistanceToMarketSelection",
+				"args": {},
+				"FactorWeight": 2.0
+			}
+		}
+	}
 }

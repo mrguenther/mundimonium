@@ -1,62 +1,60 @@
 {
-    "ExtensibleObjects": {
-        "TerrainObjectName": {
-            "Type": "TerrainObject",
-            "CreationTrigger": {
-                "TriggerType": "Ordered",
-                "TriggerOrder": 0
-            }
-        },
+	"TerrainObjectName": {
+		"Type": "TerrainObject",
+		"CreationTrigger": {
+			"TriggerType": "Ordered",
+			"TriggerOrder": 0
+		}
+	},
 
-        "PointObjectName": {
-            "Type": "PointObject",
-            "CreationTrigger": {
-                "TriggerType": "OnCalled",
-                "TriggerName": "AddPointObject"
-            },
-            "AfterCreation": [
-                "AddLayerObject"
-            ],
-            "Properties": {
-                "staticPropertyName": {
-                    "Origin": "Static",
-                    "Value": "Static Property Value"
-                },
-                "calculatedPropertyName": {
-                    "Origin": "PropertyFunction",
-                    "PropertyFunction": "PropertyFunctionSubclassName",
-                    "args": {},
-                    "Value": null
-                }
-            },
-            "SelectionFactors": {
-                "SelectionFactorName": {
-                    "Origin": "SelectionProperty",
-                    "SelectionProperty": "SelectionPropertySubclassName",
-                    "args": {},
-                    "FactorWeight": 1.0
-                }
-            }
-        },
-        
-        "LayerObjectName": {
-            "Type": "LayerObject",
-            "CreationTrigger": {
-                "TriggerType": "OnCalled",
-                "TriggerName": "AddLayerObject"
-            },
-            "Properties": {
-                "jsonFile": {
-                    "Origin": "Static",
-                    "Value": "%CONFIGPATH%/layerobject.layer.json"
-                },
-                "associatedPointObject": {
-                    "Origin": "PropertyFunction",
-                    "PropertyFunction": "DetermineCreator",
-                    "args": {},
-                    "Value": null
-                }
-            }
-        }
-    }
+	"PointObjectName": {
+		"Type": "PointObject",
+		"CreationTrigger": {
+			"TriggerType": "OnCalled",
+			"TriggerName": "AddPointObject"
+		},
+		"AfterCreation": [
+			"AddLayerObject"
+		],
+		"Properties": {
+			"staticPropertyName": {
+				"Origin": "Static",
+				"Value": "Static Property Value"
+			},
+			"calculatedPropertyName": {
+				"Origin": "PropertyFunction",
+				"PropertyFunction": "PropertyFunctionSubclassName",
+				"args": {},
+				"Value": null
+			}
+		},
+		"SelectionFactors": {
+			"SelectionFactorName": {
+				"Origin": "SelectionProperty",
+				"SelectionProperty": "SelectionPropertySubclassName",
+				"args": {},
+				"FactorWeight": 1.0
+			}
+		}
+	},
+	
+	"LayerObjectName": {
+		"Type": "LayerObject",
+		"CreationTrigger": {
+			"TriggerType": "OnCalled",
+			"TriggerName": "AddLayerObject"
+		},
+		"Properties": {
+			"jsonFile": {
+				"Origin": "Static",
+				"Value": "%CONFIGPATH%/layerobject.layer.json"
+			},
+			"associatedPointObject": {
+				"Origin": "PropertyFunction",
+				"PropertyFunction": "DetermineCreator",
+				"args": {},
+				"Value": null
+			}
+		}
+	}
 }
