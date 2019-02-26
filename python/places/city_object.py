@@ -6,7 +6,7 @@
 
 from typing import Tuple, List, Optional
 
-from utils_win.coordinate_grid import CartesianPoint
+from utils.coordinate_grid import CartesianPoint
 from road_graph import RoadGraph
 import numpy
 

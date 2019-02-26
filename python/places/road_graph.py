@@ -4,7 +4,7 @@
 
 from typing import Tuple, Optional
 
-from utils_win.coordinate_grid import CartesianPoint
+from utils.coordinate_grid import CartesianPoint
 
 import networkx
 

@@ -2,7 +2,7 @@ from typing import Tuple
 
 import numpy as np
 from enum import Enum, auto
-from utils_win.distance_unit import DistanceUnit
+from distance_unit import DistanceUnit
 
 
 class CoordinateSpace(Enum):
