@@ -1,11 +1,13 @@
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict
 
 from utils.coordinate_grid import CartesianPoint
 from road_graph import RoadGraph
-from selection_properties import *
-from property_functions import *
-from object_manager import *
+from selection_properties import SelectionPropertyManager
+from property_functions import PropertyFunctionManager
+from trigger_functions import TriggerThresholdManager
+from object_manager import ObjectManager, Trigger
 import numpy
+import networkx
 
 
 class ExtensibleObject:
@@ -18,13 +20,20 @@ class ExtensibleObject:
 	Attributes:
 		properties {dict[str: Any]}
 			-- Dictionary of properties loaded by extension files
-		triggers {dict[Trigger: function]}
-
-		locationFactors {list [locationFactor {SelectionProperty}]}
-			-- The factors to be evaluated when checking a location's suitability
-				locationFactor is a generic for a subclass of SelectionProperty
-		locationWeights {numpy.array}
-			-- The array of weights associated with each locationFactor
+		objectName {str}
+			-- The name of the object (e.g. Residence, RoadNetwork)
+		jsonObject {dict}
+			-- The JSON Object from which to load the ExtensibleObject
+		parentLayer {Optional[LayerObject]}
+			-- The parent layer of the object
+				This should only be None in the case of the highest-tier layer
+		creator {Optional[ExtensibleObject]}
+			-- The ExtensibleObject creating this new ExtensibleObject
+				TriggerManager, while usually being the object actually instantiating a new ExtensibleObject,
+				should set creator to the ExtensibleObject that activated the OnCalled CreationTrigger,
+				or the parent layer if it was an Ordered trigger
+		afterCreationTriggers {list}
+			-- Triggers to be called on object creation
 	"""
 	
 	def __init__(
@@ -33,26 +42,11 @@ class ExtensibleObject:
 		jsonObject: dict,
 		parentLayer: Optional[LayerObject] = None,
 		creator: Optional[ExtensibleObject] = None):
-		"""[summary]
-		
-		Arguments:
-			objectName {str}
-				-- The name of the object (e.g. Residence, RoadNetwork)
-			jsonObject {dict}
-				-- The JSON Object from which to load the ExtensibleObject
-			parentLayer {Optional[LayerObject]}
-				-- The parent layer of the object
-					This should only be None in the case of the highest-tier layer
-			creator {Optional[ExtensibleObject]}
-				-- The ExtensibleObject creating this new ExtensibleObject
-					TriggerManager, while usually being the object actually instantiating a new ExtensibleObject,
-					should set creator to the ExtensibleObject that activated the OnCalled CreationTrigger,
-					or the parent layer if it was an Ordered trigger
-		"""
 
 		self.properties = {
 			'creator': creator}
 		self.objectName = objectName
+		self.jsonObject = jsonObject
 		self.selectionFactors = None
 		self.creator = creator
 		self.parentLayer = parentLayer
@@ -73,7 +67,7 @@ class ExtensibleObject:
 			elif data['Origin'] == 'PropertyFunction':
 				funcName = data['PropertyFunction']
 				args = data['Args']
-				result = PropertyFunctionManager.propertyFunctions[funcName](args)
+				result = PropertyFunctionManager.propertyFunctions[funcName].determineValue(None, self, args)
 				self.properties[prop] = result
 			else:
 				raise KeyError('Invalid Origin value %(originValue)s for property %(propertyName)s' % 
@@ -81,10 +75,43 @@ class ExtensibleObject:
 					'propertyName': str(prop)})
 		if 'SelectionFactors' in jsonObject:
 			self.selectionFactors = jsonObject['SelectionFactors']
-		if 'AfterCreation' in jsonObject:
-			for triggerName in jsonObject['AfterCreation']:
-				trigger = Trigger(self.parentLayer, triggerName=triggerName)
-				self.afterCreationTriggers.append(trigger)
+		if 'Triggers' in jsonObject:
+			self.loadTriggers(jsonObject['Triggers'])
+
+	def loadTriggers(self, jsonTriggers: dict):
+		"""
+		Load triggers from a subset of the jsonObject
+			For now, this just involves populating self.afterCreationTriggers
+			There may later be additional types of triggers to be called
+		
+		Arguments:
+			jsonTriggers {dict} 
+				-- Dict of triggers from layer.json files
+		"""
+
+		# TODO: Flesh this out for more trigger varieties
+
+		for triggerName, trigger in jsonTriggers.items():
+			repeatCount = 0
+			if 'RepeatCount' in trigger: repeatCount = trigger['RepeatCount']
+			stopThreshold = None
+			if 'StopThreshold' in trigger: stopThreshold = trigger['StopThreshold']
+			continueFunction = None
+			if 'ContinueFunction' in trigger: 
+				continueFunction = TriggerThresholdManager.triggerThresholds[trigger['ContinueFunction']].testThreshold
+			continueArgs = None
+			if 'ContinueArgs' in trigger: continueArgs = trigger['ContinueArgs']
+			if trigger['TriggerType'] == 'AfterCreation':
+				# TODO: Have this construct the correct type of trigger (repeating, etc.)
+				triggerObject = Trigger(
+					self.parentLayer, 
+					repeatCount=repeatCount, 
+					stopThreshold=stopThreshold, 
+					continueFunction=continueFunction, 
+					continueArgs=continueArgs, 
+					triggerName=triggerName)
+				self.afterCreationTriggers.append(triggerObject)
+
 
 	def initializeObject(self, jsonObject: dict):
 		"""
@@ -94,10 +121,9 @@ class ExtensibleObject:
 		self.loadObject(jsonObject)
 		self.placeObject()
 		# TODO
-		# Call placeObject (add object to parent layer)
 		# Add object to helper objects (e.g. bin manager)
 		# Add object to renderer if relevant
-		# Call any AfterCreation triggers
+		# Add any non-AfterCreation triggers
 		self.subclassInit()
 		self.callAfterCreationTriggers()
 
@@ -110,7 +136,8 @@ class ExtensibleObject:
 		pass
 
 	def callAfterCreationTriggers(self):
-		"""[summary]
+		"""
+		Calls any AfterCreation Triggers for the object
 		"""
 
 		for trigger in self.afterCreationTriggers:
@@ -118,51 +145,36 @@ class ExtensibleObject:
 
 	def placeObject(self):
 		"""
-		Abstract Method: Place the object on its parent layer object
-			Each subclass should overload this with their own placement method
-			Some ExtensibleObjects in the future may, additionally, use a different placeObject
-			method than their default.
+		Determine potential locations for the object and place it, if applicable
+			Each subclass that cares should overload this with their own placement method
+			Note that subclasses that *do* have a location should place themselves on the
+			location lookup table in this function in the future
 		"""
-		
-		# Subclasses will usually call getValues here.
-		raise NotImplementedError
+		pass
 
-	def getValues(self, potentialLocations: List[CartesianPoint]) -> numpy.array:
+class NetworkObject(ExtensibleObject):
+	"""[summary]
+	
+	Attributes:
+		graph {networkx.Graph}
+			-- The network this object is built around
+	"""
+
+	def subclassInit(self):
+		"""[summary]
 		"""
-		Calculate an array of values for each potential location in an array thereof
+
+		self.graph = networkx.Graph()
+
+	def addPoint(self, point: 'PointObject'):
+		"""[summary]
 		
 		Arguments:
-			potentialLocations {List[CartesianPoint]} 
-				-- A list of locations at which to check each location factor
-					This should preferably be chosen somewhat heuristically
-						Or at a minimum narrowed down significantly from all points
-					We may also want to save results to the local point, for future reference
-		
-		Returns:
-			returnValues {numpy.array} 
-				-- An array of the resulting values, normalized as a total probability distribution
-					TODO: Consider returning potentialLocations as well, so we can more easily reference the chosen spot
+			point {PointObject} -- [description]
 		"""
 
-		# TODO: Save these results for any given factor/arg set, so we don't recalculate all the time
+		self.graph.add_node(point)
 
-		"""locationValues = numpy.array([])
-
-		for potentialLocation in potentialLocations:
-			factorValues = numpy.array([])
-			for i in range(self.locationFactors):
-				factorValue = self.locationFactors[i].determineValue(potentialLocation) * self.locationWeights[i]
-				factorValues.append(factorValue)
-			locationValues.append(numpy.sum(factorValues))
-		
-		total = locationValues.dot(self.locationWeights)
-		returnValues = numpy.array([])
-		for value in locationValues:
-			returnValues.append(value/total)
-
-		return(returnValues)"""
-
-class NetworkObject(ExtensibleObject): pass
 
 class TerrainObject(ExtensibleObject): pass
 
@@ -178,13 +190,14 @@ class LayerObject(ExtensibleObject):
 		"""[summary]
 		
 		Arguments:
-			layerFilePath {str} -- [description]
+			layerFilePath {str} 
+				-- The filepath of the layer JSON file from which to load... everything in the layer
 		"""
 
 		self.objectManager = ObjectManager(self, self.properties['layerFilePath'])
 		self.objectManager.triggerManager.resolveOrdered(self)
 
-	def loadObject(self, caller: ExtensibleObject, objectData: Tuple[str, dict]):
+	def loadOtherObject(self, caller: ExtensibleObject, objectData: Tuple[str, dict]):
 		"""[summary]
 		
 		Arguments:
@@ -212,6 +225,7 @@ class LayerObject(ExtensibleObject):
 						{'type': str(objectInfo['Type']),
 						'objectName': str(objectName)})
 		self.objectManager.objects.append(newObject)
+		self.objectManager.objectsByName[objectName].append(newObject)
 
 
 class PointObject(ExtensibleObject):
@@ -220,17 +234,99 @@ class PointObject(ExtensibleObject):
 	For example, buildings
 	
 	Attributes:
-		properties {dict[str: Any]}
-			-- Dictionary of properties loaded by extension files
 		location {CartesianPoint}
 			-- Location of the PointObject
 	"""
 
+	def subclassInit(self):
+		"""[summary]
+		"""
+
+		self.placeObject()
+
+
+	def findPotentialLocations(self) -> List[CartesianPoint]:
+		"""
+		Returns a list of potential locations
+			Ideally, this will use some sort of heuristics to narrow down the options from 'everywhere'
+
+		Returns:
+			potentialLocations {List[CartesianPoint]}
+				-- List of potential locations
+		"""
+
+		# TODO: Make this actually do something
+		# This is just a temp function to get a bunch of potential points
+		potentialLocations = []
+		for x in range(100):
+			for y in range(100):
+				potentialLocations.append(CartesianPoint((x,y,0)))
+		return(potentialLocations)
+
+
 	def placeObject(self):
 		"""
 		Uses loaded object's SelectionFactors to determine a location and place the object there.
-			Usually called
-
-		Some objects may use a different 
 		"""
+
+		potentialLocations = self.findPotentialLocations()
+		locationValues = self.getValues(potentialLocations)
+		values = numpy.array(locationValues.values())
+		values /= values.sum()
+		self.location = numpy.random.choice(locationValues.keys,1,p=values)[0]
+
+
+	def getValue(self, potentialLocation: CartesianPoint) -> float:
+		"""[summary]
+		
+		Arguments:
+			potentialLocation {CartesianPoint} -- [description]
+		
+		Returns:
+			float -- [description]
+		"""
+
+		valueTot = 0.0
+
+		for selectionFactor, data in self.selectionFactors.items():
+			if data['Origin'] == 'SelectionProperty':
+				funcName = data['SelectionProperty']
+				result = SelectionPropertyManager.selectionProperties[funcName].determineValue(None, self, potentialLocation)
+				value = result * data['FactorWeight']
+			else:
+				raise KeyError('Invalid Origin value %(originValue)s for selectionFactor %(selectionFactor)s' % 
+					{'originValue': str(data['Origin']),
+					'selectionFactor': str(selectionFactor)})
+
+			valueTot += value
+
+		return(valueTot)
+
+	def getValues(self, potentialLocations: List[CartesianPoint]) -> Dict[CartesianPoint: float]:
+		"""
+		Calculate an array of values for each potential location in an array thereof
+		
+		Arguments:
+			potentialLocations {List[CartesianPoint]} 
+				-- A list of locations at which to check each location factor
+					This should preferably be chosen somewhat heuristically
+						Or at a minimum narrowed down significantly from all points
+					We may also want to save results to the local point, for future reference
+		
+		Returns:
+			values {dict[CartesianPoint: float]} 
+				-- A dict of the resulting values (keyed by location), NOT yet normalized
+					TODO: Consider returning potentialLocations as well, so we can more easily reference the chosen spot
+		"""
+
+		# TODO: Save these results for any given factor/arg set, so we don't recalculate all the time
+		# Also change this to a dot product eventually
+		# But right now that's far from the least efficient part here
+
+		values = {}
+
+		for potentialLocation in potentialLocations:
+			values[potentialLocation] = self.getValue(potentialLocation)
+
+		return(values)
 

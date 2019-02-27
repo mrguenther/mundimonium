@@ -16,14 +16,13 @@ class ObjectManager:
 	"""
 
 	def __init__(self, layer: 'LayerObject', layerFilePath: str):
-		"""[summary]
-		"""
 
 		self.triggerManager = TriggerManager()
 		self.layer = layer
 		self.layerFile = None
 
 		self.objects = []
+		self.objectsByName = {}
 
 		self.loadLayerFile(layerFilePath)
 		self.loadTriggers(self.layerFile)
@@ -62,42 +61,48 @@ class ObjectManager:
 						'objectName': str(objectName)})
 
 
-				self.triggerManager.addTrigger(trigger, self.layer.loadObject, (objectName, objectToLoad))
-		
+				self.triggerManager.addTrigger(trigger, self.layer.loadOtherObject, (objectName, objectToLoad))		
 
 class Trigger:
 	"""
 	Triggers to be used by ExtensibleObjects for controlling object creation etc.
 		Managed by TriggerManagers
-	
+
+	TODO: Set this up to deal with expanded trigger types
+
 	Attributes:
-		parentLayer {ExtensibleObject}
-			-- The layer to which the Trigger belongs
-				This is also the caller for Ordered Triggers
-		triggerName {Optional[str]}
-			-- The name of the trigger
-				In the case of Ordered Triggers, this will be None
-		triggerOrder {Optional[int]}
-			-- The order of the trigger
-				In the case of Named Triggers, this will be None
+		parentLayer {LayerObject} 
+				-- The layer to which the Trigger belongs
+					This is also the caller for Ordered Triggers
+		repeatCount {Optional[int]}
+			-- How many times the trigger should be called
+		stopThreshold {Optional[float]}
+		continueFunction {Optional[Callable[['LayerObject', dict], float]]}
+			-- Function whose value is to be compared against the stopThreshold
+				Trigger will be called until the return of this function exceeds stopThreshold
+				First argument will always be parentLayer
+		continueArgs {Optional[dict]}
+			-- Dict of args to be sent to continueFunction
+		maxCalls {Optional[int]} (default: 10000)
+			-- Maximum number of times the trigger can be called
+				This should be set to a suitably high number, or left as the default 10k
+				It primarily serves as an escape route for continueFunctions that never meet the stopThreshold
+		triggerName {Optional[str]} 
+			-- The name by which the trigger is called. This xor triggerOrder MUST be defined.
+		triggerOrder {Optional[int]} 
+			-- The order in which the trigger should be called.
 	"""
 
 	def __init__(
 		self,
 		parentLayer: 'LayerObject',
+		repeatCount: Optional[int] = 0,
+		stopThreshold: Optional[float] = None,
+		continueFunction: Optional[Callable[['LayerObject', dict], float]] = None,
+		continueArgs: Optional[dict] = None,
+		maxCalls: Optional[int] = 10000,
 		triggerName: Optional[str] = None,
 		triggerOrder: Optional[int] = None):
-		"""		
-		Arguments:
-			parentLayer {LayerObject} 
-				-- The layer to which the Trigger belongs
-		
-		Keyword Arguments:
-			triggerName {Optional[str]} 
-				-- The name by which the trigger is called. This xor triggerOrder MUST be defined.
-			triggerOrder {Optional[int]} 
-				-- The order in which the trigger should be called.
-		"""
 
 		if (triggerName is None) != (triggerOrder is None):
 			raise TypeError("Trigger() requires triggerName xor triggerOrder")
@@ -105,6 +110,12 @@ class Trigger:
 		self.triggerOrder = triggerOrder
 		self.triggerName = triggerName
 		self.parentLayer = parentLayer
+		self.repeatCount = repeatCount
+		self.continueFunction = continueFunction
+		self.stopThreshold = stopThreshold
+		self.continueArgs = continueArgs
+		self.calls = 0
+		self.maxCalls = maxCalls
 
 	def __hash__(self):
 		"""
@@ -137,9 +148,7 @@ class TriggerManager:
 	"""
 
 	def __init__(self):
-		"""[summary]
-		"""
-
+		
 		self.triggers = {}
 		self.orderedMax = {}
 
@@ -207,5 +216,18 @@ class TriggerManager:
 		if caller is None:
 			caller = trigger.parentLayer
 
-		for (triggeredFunction, arg) in self.triggers[trigger]:
-			triggeredFunction(caller, arg)
+		# Call the trigger's triggered function once, plus as many times as repeatCount
+		for i in range(1 + trigger.repeatCount):
+			if trigger.calls < trigger.maxCalls:
+				for (triggeredFunction, arg) in self.triggers[trigger]:
+					triggeredFunction(caller, arg)
+				trigger.calls += 1
+		# If the trigger has a function threshold, repeat the trigger until it's met
+		if trigger.continueFunction is not None and trigger.stopThreshold is not None:
+			while trigger.continueFunction(trigger.parentLayer, trigger.continueArgs) < trigger.stopThreshold:
+				if trigger.calls < trigger.maxCalls:
+					for (triggeredFunction, arg) in self.triggers[trigger]:
+						triggeredFunction(caller, arg)
+					trigger.calls += 1
+
+

@@ -15,9 +15,11 @@
 			"TriggerType": "OnCalled",
 			"TriggerName": "AddCity"
 		},
-		"AfterCreation": [
-			"AddCityLayer"
-		],
+		"Triggers": {
+			"AfterCreation": [
+				"AddCityLayer"
+			]
+		},
 		"Properties": {
 		},
 		"SelectionFactors": {

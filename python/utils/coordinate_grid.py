@@ -1,8 +1,8 @@
 from typing import Tuple
 
+from .distance_unit import DistanceUnit
 import numpy as np
 from enum import Enum, auto
-from distance_unit import DistanceUnit
 
 
 class CoordinateSpace(Enum):
@@ -37,6 +37,7 @@ class CartesianPoint:
 
 	Attributes:
 		coords {tuple[float, float, float]}
+			-- (x,y,z)
 	"""
 
 	def __init__(self, location: Tuple[float, float, float]):
@@ -45,10 +46,27 @@ class CartesianPoint:
 
 		Arguments:
 			location {Tuple[float, float, float]} 
-				-- Point creation location
+				-- Point creation location (x,y,z)
 		"""
 
 		self.coords = location
+
+	def __hash__(self):
+		"""
+		Hash function - allows CartesianPoints objects to be used as hashables
+		"""
+
+		return(hash(self.coords))
+
+	def __eq__(self, other):
+		"""
+		Equivalence function - allows comparison and usage of CartesianPoint objects as hashables
+		Note that tuples are compared against CartesianPoint.coords for equivalency
+		"""
+
+		if type(self) == type(other): return(self.__hash__() == other.__hash__())
+		if type(other) == tuple: return(self.coords == other)
+		return(False)
 
 
 

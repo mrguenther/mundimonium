@@ -1,4 +1,4 @@
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict
 
 from utils.coordinate_grid import CartesianPoint
 
@@ -16,17 +16,24 @@ class PropertyFunction:
 
 	TODO: Decide if these should just be functions instead
 		As classes, they support inheritance, which might be nice
+
+	TODO: Decide if these should be read-only
+		For now they're not - Notably, FindAndAssociateNetworkByName is the current method of adding to NetworkObjects
+		But these types of functions could be moved into universal triggered functions instead
 	"""
 	
 	def determineValue(
 		self, 
-		args: Optional[dict] = None) -> any:
+		caller: 'ExtensibleObject',
+		args: dict) -> any:
 		"""
 		Abstract Method: Evaluate a property for an object.
 		
 		Arguments:
-			args {Optional[dict]}
-				-- Arguments to be passed along from the JSON Object
+			caller {ExtensibleObject}
+				-- The object you wish to evaluate the property for
+			args {dict}
+				-- Dict of args passed along from the JSON object
 
 		Returns:
 			value {any}
@@ -35,40 +42,67 @@ class PropertyFunction:
 
 		raise NotImplementedError
 
-class DetermineRoadNetwork(PropertyFunction):
+class FindObjectByName(PropertyFunction):
 	"""
-	Class for determining the associatedNetwork property of a building
-		Generally speaking, this will just be the first instantiated instance of a RoadNetwork NetworkObject
+	Class for locating an object by name and instance number
+		Note that the object to be found must have been created before the object calling this
 	"""
 
-	def determineValue(self) -> 'NetworkObject':
+	def determineValue(
+		self, 
+		caller: 'ExtensibleObject',
+		args: Dict[str, any]) -> 'ExtensibleObject':
 		"""
-		Find a RoadNetwork object. The expected usage of the object is to populate the associatedNetwork field.
+		Find an object. The expected usage of the object is to populate the associatedNetwork field.
+
+		Arguments:
+			caller {ExtensibleObject}
+				-- The object you wish to evaluate the property for
+			args {dict}
+				-- Dict of args passed along from the JSON object
+				-- Required Values:
+					'ObjectName': str
+					'ObjectInstance': int
 
 		Returns:
-			roadNetwork {NetworkObject} 
-				-- The RoadNetwork object
+			namedObject {ExtensibleObject} 
+				-- The object named
 		"""
 
-		raise NotImplementedError("This is not an abstract class, it's just not written yet.")
+		name = args['ObjectName']
+		instance = args['ObjectInstance']
+		return(caller.parentLayer.objectManager.objectsByName[name][instance])
 
-
-class DetermineTerrain(PropertyFunction):
+class FindAndAssociateNetworkByName(FindObjectByName):
 	"""
-	Class for determining the associatedTerrain property of a building
-		Generally speaking, this will just be the first instantiated instance of a CityTerrain TerrainObject
+	Class for finding a NetworkObject by name and instance number, 
+		then adding the calling PointObject as a node
 	"""
 
-	def determineValue(self) -> 'TerrainObject':
+	def determineValue(
+		self, 
+		caller: 'PointObject',
+		args: Dict[str, any]) -> 'NetworkObject':
 		"""
-		Find a CityTerrain TerrainObject. The expected usage of the object is to populate the associatedTerrain field.
+		Find a NetworkObject and add caller as a node, then return the NetworkObject
+
+		Arguments:
+			caller {PointObject}
+				-- The object you wish to add as a node
+			args {dict}
+				-- Dict of args passed along from the JSON object
+				-- Required Values:
+					'ObjectName': str
+					'ObjectInstance': int
 
 		Returns:
-			cityTerrain {TerrainObject} 
-				-- The CityTerrain object
+			networkToAssociate {NetworkObject} 
+				-- The NetworkObject found and added to
 		"""
 
-		raise NotImplementedError("This is not an abstract class, it's just not written yet.")
+		networkToAssociate = super().determineValue(caller, args)
+		networkToAssociate.addPoint(caller)
+		return(networkToAssociate)
 
 class DetermineCreator(PropertyFunction):
 	"""
@@ -79,7 +113,8 @@ class DetermineCreator(PropertyFunction):
 
 	def determineValue(
 		self,
-		caller: 'ExtensibleObject') -> 'ExtensibleObject':
+		caller: 'ExtensibleObject',
+		args: dict) -> 'ExtensibleObject':
 		"""
 		Find the object that created caller
 
@@ -103,6 +138,6 @@ class PropertyFunctionManager:
 	"""
 
 	propertyFunctions = {
-		"DetermineRoadNetwork": DetermineRoadNetwork, 
-		"DetermineTerrain": DetermineTerrain,
-		"DetermineCreator": DetermineCreator}
+		'FindObjectByName': FindObjectByName,
+		'DetermineCreator': DetermineCreator,
+		'FindAndAssociateNetworkByName': FindAndAssociateNetworkByName}

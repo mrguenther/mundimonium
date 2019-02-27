@@ -59,8 +59,7 @@ class DistanceToRoadSelection(SelectionProperty):
 				-- The value of the location
 		"""
 
-		caller.getAssociatedNetwork() # The road network against which to check
-		caller.properties['associatedNetwork'] # The alternative
+		caller.properties['associatedNetwork'] # The road network against which to check
 
 		raise NotImplementedError("This is not an abstract class, it's just not written yet.")
 

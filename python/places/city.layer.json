@@ -6,6 +6,12 @@
 			"TriggerOrder": 1
 		},
 		"Properties": {
+		},
+		"Triggers": {
+			"AddResidence": {
+				"TriggerType": "AfterCreation",
+				"RepeatCount": 50
+			}
 		}
 	},
 	
@@ -18,8 +24,11 @@
 		"Properties": {
 			"associatedNetwork": {
 				"Origin": "PropertyFunction",
-				"PropertyFunction": "DetermineRoadNetwork",
-				"args": {},
+				"PropertyFunction": "FindAndAssociateNetworkByName",
+				"args": {
+					"ObjectName": "RoadNetwork",
+					"ObjectInstance": 0
+				},
 				"Value": null
 			}
 		},
@@ -43,9 +52,12 @@
 			"TriggerType": "OnCalled",
 			"TriggerName": "AddResidence"
 		},
-		"AfterCreation": [
-			"AddRoadPoint"
-		],
+		"Triggers": {
+			"AddRoadPoint": {
+				"TriggerType": "AfterCreation",
+				"Repeat": "None"
+			}
+		},
 		"Properties": {
 			"maxGrade": {
 				"Origin": "Static",
@@ -57,14 +69,20 @@
 			},
 			"associatedNetwork": {
 				"Origin": "PropertyFunction",
-				"PropertyFunction": "DetermineRoadNetwork",
-				"args": {},
+				"PropertyFunction": "FindObjectByName",
+				"args": {
+					"ObjectName": "RoadNetwork",
+					"ObjectInstance": 0
+				},
 				"Value": null
 			},
 			"associatedTerrain": {
 				"Origin": "PropertyFunction",
-				"PropertyFunction": "DetermineTerrain",
-				"args": {},
+				"PropertyFunction": "FindObjectByName",
+				"args": {
+					"ObjectName": "CityTerrain",
+					"ObjectInstance": 0
+				},
 				"Value": null
 			}
 		},

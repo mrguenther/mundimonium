@@ -13,9 +13,11 @@
 			"TriggerType": "OnCalled",
 			"TriggerName": "AddPointObject"
 		},
-		"AfterCreation": [
-			"AddLayerObject"
-		],
+		"Triggers": {
+			"AfterCreation": [
+				"AddLayerObject"
+			]
+		},
 		"Properties": {
 			"staticPropertyName": {
 				"Origin": "Static",
