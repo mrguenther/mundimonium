@@ -43,7 +43,7 @@
 			"TriggerType": "OnCalled",
 			"TriggerName": "AddResidence"
 		},
-			"AfterCreation": [
+		"AfterCreation": [
 			"AddRoadPoint"
 		],
 		"Properties": {

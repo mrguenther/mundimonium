@@ -2,18 +2,31 @@ from typing import Tuple, List, Optional, Callable
 import json
 
 class ObjectManager:
-	"""[summary]
+	"""
+	Class for managing objects, of course
+		Provides utility for loading and keeping track of objects and triggers
+		Such as functions to process layer files for CreationTriggers
+		Each LayerObject has its own ObjectManager, which in turn has a TriggerManager
+
+	Attributes:
+		triggerManager {TriggerManager}
+			-- The TriggerManager attached to the ObjectManager, and therefore the layer
+		layer {LayerObject}
+			-- The LayerObject for which objects are being managed
 	"""
 
-	def __init__(self, layer: 'LayerObject'):
+	def __init__(self, layer: 'LayerObject', layerFilePath: str):
 		"""[summary]
 		"""
 
 		self.triggerManager = TriggerManager()
 		self.layer = layer
+		self.layerFile = None
 
-	def loadObject(self, caller: 'ExtensibleObject', objectInfo: dict):
-		pass
+		self.objects = []
+
+		self.loadLayerFile(layerFilePath)
+		self.loadTriggers(self.layerFile)
 
 	def loadLayerFile(self, path: str):
 		"""[summary]
@@ -26,11 +39,17 @@ class ObjectManager:
 			contents = json.load(f)
 		self.layerFile = contents
 
-	def loadTriggers(self):
-		"""[summary]
+	def loadTriggers(self, layerFile: dict):
+		"""
+		Load callable triggers from a layer file
+			For now, this is limited to only Creation Triggers
+
+		Arguments:
+			layerFile {dict}
+				-- The layer file from which to load triggers
 		"""
 
-		for objectToLoad in self.layerFile:
+		for objectName, objectToLoad in layerFile.items():
 			if 'CreationTrigger' in objectToLoad:
 				creationTrigger = objectToLoad['CreationTrigger']
 				if creationTrigger['TriggerType'] == 'OnCalled':
@@ -38,11 +57,12 @@ class ObjectManager:
 				elif creationTrigger['TriggerType'] == 'Ordered':
 					trigger = Trigger(self.layer, triggerOrder = creationTrigger['TriggerOrder'])
 				else:
-					raise KeyError('Invalid TriggerType %(triggerType)s' % 
-						{'triggerType': str(creationTrigger['TriggerType'])})
+					raise KeyError('Invalid TriggerType %(triggerType)s in %(objectName)s' % 
+						{'triggerType': str(creationTrigger['TriggerType']),
+						'objectName': str(objectName)})
 
 
-				self.triggerManager.addTrigger(trigger, self.loadObject, objectToLoad)
+				self.triggerManager.addTrigger(trigger, self.layer.loadObject, (objectName, objectToLoad))
 		
 
 class Trigger:

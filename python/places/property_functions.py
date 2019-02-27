@@ -20,13 +20,13 @@ class PropertyFunction:
 	
 	def determineValue(
 		self, 
-		caller: Optional['ExtensibleObject'] = None) -> any:
+		args: Optional[dict] = None) -> any:
 		"""
 		Abstract Method: Evaluate a property for an object.
 		
 		Arguments:
-			caller {ExtensibleObject}
-				-- The object you wish to evaluate the property for
+			args {Optional[dict]}
+				-- Arguments to be passed along from the JSON Object
 
 		Returns:
 			value {any}
