@@ -1,47 +1,52 @@
 {
-	"RegionTerrain": {
-		"Type": "TerrainObject",
-		"CreationTrigger": {
-			"TriggerType": "Ordered",
-			"TriggerOrder": 0
-		},
-		"Properties": {
-		}
-	},
+	"FunctionTriggers": {
 
-	"City": {
-		"Type": "PointObject",
-		"CreationTrigger": {
-			"TriggerType": "OnCalled",
-			"TriggerName": "AddCity"
-		},
-		"Triggers": {
-			"AfterCreation": [
-				"AddCityLayer"
-			]
-		},
-		"Properties": {
-		},
-		"SelectionFactors": {
-		}
 	},
-	
-	"CityLayer": {
-		"Type": "LayerObject",
-		"CreationTrigger": {
-			"TriggerType": "OnCalled",
-			"TriggerName": "AddCityLayer"
-		},
-		"Properties": {
-			"jsonFile": {
-				"Origin": "Static",
-				"Value": "./city.layer.json"
+	"MapComponents": {
+		"RegionTerrain": {
+			"Type": "MapTerrain",
+			"CreationTrigger": {
+				"TriggerType": "Ordered",
+				"TriggerOrder": 0
 			},
-			"associatedCity": {
-				"Origin": "PropertyFunction",
-				"PropertyFunction": "DetermineCreator",
-				"args": {},
-				"Value": null
+			"Properties": {
+			}
+		},
+
+		"City": {
+			"Type": "MapPoint",
+			"CreationTrigger": {
+				"TriggerType": "OnCalled",
+				"TriggerName": "AddCity"
+			},
+			"Triggers": {
+				"AfterCreation": [
+					"AddCityLayer"
+				]
+			},
+			"Properties": {
+			},
+			"SelectionFactors": {
+			}
+		},
+		
+		"CityLayer": {
+			"Type": "MapLayer",
+			"CreationTrigger": {
+				"TriggerType": "OnCalled",
+				"TriggerName": "AddCityLayer"
+			},
+			"Properties": {
+				"layerFilePath": {
+					"Origin": "Static",
+					"Value": "./city.layer.json"
+				},
+				"associatedCity": {
+					"Origin": "PropertyFunction",
+					"PropertyFunction": "DetermineCreator",
+					"args": {},
+					"Value": null
+				}
 			}
 		}
 	}

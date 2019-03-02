@@ -1,21 +1,21 @@
 {
-	"TerrainObjectName": {
-		"Type": "TerrainObject",
+	"MapTerrainName": {
+		"Type": "MapTerrain",
 		"CreationTrigger": {
 			"TriggerType": "Ordered",
 			"TriggerOrder": 0
 		}
 	},
 
-	"PointObjectName": {
-		"Type": "PointObject",
+	"MapPointName": {
+		"Type": "MapPoint",
 		"CreationTrigger": {
 			"TriggerType": "OnCalled",
-			"TriggerName": "AddPointObject"
+			"TriggerName": "AddMapPoint"
 		},
 		"Triggers": {
 			"AfterCreation": [
-				"AddLayerObject"
+				"AddMapLayer"
 			]
 		},
 		"Properties": {
@@ -40,18 +40,18 @@
 		}
 	},
 	
-	"LayerObjectName": {
-		"Type": "LayerObject",
+	"MapLayerName": {
+		"Type": "MapLayer",
 		"CreationTrigger": {
 			"TriggerType": "OnCalled",
-			"TriggerName": "AddLayerObject"
+			"TriggerName": "AddMapLayer"
 		},
 		"Properties": {
 			"jsonFile": {
 				"Origin": "Static",
-				"Value": "%CONFIGPATH%/layerobject.layer.json"
+				"Value": "%CONFIGPATH%/MapLayer.layer.json"
 			},
-			"associatedPointObject": {
+			"associatedMapPoint": {
 				"Origin": "PropertyFunction",
 				"PropertyFunction": "DetermineCreator",
 				"args": {},

@@ -1,0 +1,55 @@
+Triggers: How they work
+
+JSON components have two primary fields that they use to manage triggers: CreationTrigger and Triggers
+	CreationTriggers are loaded by the layer object as soon as it is instantiated
+		More specifically, by the ObjectManager
+		They have two fields, TriggerType and either TriggerName or TriggerOrder
+		TriggerType can be OnCalled or Ordered
+			If OnCalled, they will have a TriggerName
+			When a Trigger with that name is called, the layer that owns that Trigger will call loadOtherObject and instantiate each object that has a CreationTrigger with that TriggerName (in no particular order)
+			If Ordered, they will have a TriggerOrder
+			As the final step of layer instantiation, TriggerManager.resolveOrdered is called
+			This walks through and resolves each Ordered trigger in... order, low to high
+			If there are multiple Ordered triggers with the same TriggerOrder, they are resolved, once again, in no particular order
+	Triggers are loaded by the MapComponent when it is loaded from the JSON component
+		It consists of a dict of trigger names to triggers
+		The triggers have a number of fields
+		TriggerType is the only required one
+			Right now, this only supports AfterCreation
+			Generally speaking, these triggers will be called as the final step of instantiating a MapComponent
+			Any OnCalled CreationTriggers with the same TriggerName will be executed
+		Other fields:
+			RepeatCount {int}: The trigger will be called this many times (minimum) instead of once
+			ContinueFunction {str}: The name of the trigger_functions.TriggerThreshold class to use to determine when to cease calling the trigger
+			StopThreshold {float}: The value ContinueFunction must return before the trigger stops being called
+			ContinueArgs {dict}: Arguments to pass to ContinueFunction
+			MaxCalls {int}: The maximum number of times the trigger may be called before it stops, regardless of ContinueFunction's value
+
+		FunctionTriggers
+			TriggeredFunction {str}: The name of the trigger_functions.TriggeredFunction class to call when the trigger is executed
+			TriggeredFunctionArgs {dict}: Arguments to pass to TriggeredFunction
+				Note that if a TriggeredFunction is defined, the name of the trigger is *usually* irrelevant
+				Since, generally speaking, the point of the trigger will be to execute that function
+				It's best practice to use a separate trigger to call other OnCalled triggers, for clarity's sake
+					(Though sometimes this will not be best - Especially if ContinueFunction is defined, one might lose efficiency)
+
+
+"CreationTrigger": {
+	"TriggerType": "OnCalled",
+	"TriggerName": "addRoadPoint"
+},
+"Triggers": {
+	"associateRoadPointWithNetwork": {
+		"TriggerType": "AfterCreation",
+		"Repeat": 5,
+		"TriggeredFunction": "AssociatePointWithNetwork",
+		"TriggeredFunctionArgs": {
+			"NetworkByProperty": "associatedNetwork"
+		}
+	}
+}
+
+
+
+
+

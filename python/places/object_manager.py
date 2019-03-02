@@ -1,21 +1,22 @@
 from typing import Tuple, List, Optional, Callable
 import json
+from trigger_functions import TriggeredFunctionManager
 
 class ObjectManager:
 	"""
 	Class for managing objects, of course
 		Provides utility for loading and keeping track of objects and triggers
 		Such as functions to process layer files for CreationTriggers
-		Each LayerObject has its own ObjectManager, which in turn has a TriggerManager
+		Each MapLayer has its own ObjectManager, which in turn has a TriggerManager
 
 	Attributes:
 		triggerManager {TriggerManager}
 			-- The TriggerManager attached to the ObjectManager, and therefore the layer
-		layer {LayerObject}
-			-- The LayerObject for which objects are being managed
+		layer {MapLayer}
+			-- The MapLayer for which objects are being managed
 	"""
 
-	def __init__(self, layer: 'LayerObject', layerFilePath: str):
+	def __init__(self, layer: 'MapLayer', layerFilePath: str):
 
 		self.triggerManager = TriggerManager()
 		self.layer = layer
@@ -48,7 +49,7 @@ class ObjectManager:
 				-- The layer file from which to load triggers
 		"""
 
-		for objectName, objectToLoad in layerFile.items():
+		for objectName, objectToLoad in layerFile['MapComponents'].items():
 			if 'CreationTrigger' in objectToLoad:
 				creationTrigger = objectToLoad['CreationTrigger']
 				if creationTrigger['TriggerType'] == 'OnCalled':
@@ -60,24 +61,33 @@ class ObjectManager:
 						{'triggerType': str(creationTrigger['TriggerType']),
 						'objectName': str(objectName)})
 
+				self.triggerManager.addTrigger(trigger, self.layer.loadOtherObject, (objectName, objectToLoad))
+		
+		for triggerName, triggerToLoad in layerFile['FunctionTriggers'].items():
+			triggerOrder = None
+			if 'TriggerOrder' in triggerToLoad: triggerOrder = triggerToLoad['TriggerOrder']
+			triggeredFunction = TriggeredFunctionManager.triggeredFunctions[triggerToLoad['TriggeredFunction']]().executeFunction
+			triggeredFunctionArgs = triggerToLoad['TriggeredFunctionArgs']
 
-				self.triggerManager.addTrigger(trigger, self.layer.loadOtherObject, (objectName, objectToLoad))		
+			trigger = Trigger(self.layer, triggerName=triggerName, triggerOrder=triggerOrder)
+
+			self.triggerManager.addTrigger(trigger, triggeredFunction, triggeredFunctionArgs)		
 
 class Trigger:
 	"""
-	Triggers to be used by ExtensibleObjects for controlling object creation etc.
+	Triggers to be used by MapComponents for controlling object creation etc.
 		Managed by TriggerManagers
 
 	TODO: Set this up to deal with expanded trigger types
 
 	Attributes:
-		parentLayer {LayerObject} 
+		parentLayer {MapLayer} 
 				-- The layer to which the Trigger belongs
 					This is also the caller for Ordered Triggers
 		repeatCount {Optional[int]}
 			-- How many times the trigger should be called
 		stopThreshold {Optional[float]}
-		continueFunction {Optional[Callable[['LayerObject', dict], float]]}
+		continueFunction {Optional[Callable[['MapLayer', dict], float]]}
 			-- Function whose value is to be compared against the stopThreshold
 				Trigger will be called until the return of this function exceeds stopThreshold
 				First argument will always be parentLayer
@@ -95,16 +105,16 @@ class Trigger:
 
 	def __init__(
 		self,
-		parentLayer: 'LayerObject',
+		parentLayer: 'MapLayer',
 		repeatCount: Optional[int] = 0,
 		stopThreshold: Optional[float] = None,
-		continueFunction: Optional[Callable[['LayerObject', dict], float]] = None,
+		continueFunction: Optional[Callable[['MapLayer', dict], float]] = None,
 		continueArgs: Optional[dict] = None,
 		maxCalls: Optional[int] = 10000,
 		triggerName: Optional[str] = None,
 		triggerOrder: Optional[int] = None):
 
-		if (triggerName is None) != (triggerOrder is None):
+		if (triggerName is None) and (triggerOrder is None):
 			raise TypeError("Trigger() requires triggerName xor triggerOrder")
 
 		self.triggerOrder = triggerOrder
@@ -144,7 +154,7 @@ class TriggerManager:
 				Format: {Trigger: [(triggeredFunction, arg), (triggeredFunction, arg)]}
 		orderedMax {dict}
 			-- The greatest ordered trigger for each layer
-				Format: {LayerObject: int}
+				Format: {MapLayer: int}
 	"""
 
 	def __init__(self):
@@ -155,7 +165,7 @@ class TriggerManager:
 	def addTrigger(
 		self,
 		trigger: Trigger,
-		triggeredFunction: Callable[['ExtensibleObject', any],any],
+		triggeredFunction: Callable[['MapComponent', any],any],
 		arg: any):
 		"""
 		Add a trigger and the function it should call
@@ -163,9 +173,9 @@ class TriggerManager:
 		Arguments:
 			trigger {Trigger} 
 				-- The trigger
-			triggeredFunction {Callable[[ExtensibleObject, any],any]} 
-				-- The function to call. Note that this should take an ExtensibleObject and one other argument
-					Most often, this will be to create an ExtensibleObject of some variety
+			triggeredFunction {Callable[[MapComponent, any],any]} 
+				-- The function to call. Note that this should take an MapComponent and one other argument
+					Most often, this will be to create an MapComponent of some variety
 			arg {any}
 				-- Arg to pass along to the function
 					In the case of creation triggers, this will be a dict of the object to load
@@ -180,12 +190,12 @@ class TriggerManager:
 			self.triggers[trigger] = []
 		self.triggers[trigger].append((triggeredFunction, arg))
 
-	def resolveOrdered(self, layer: 'LayerObject'):
+	def resolveOrdered(self, layer: 'MapLayer'):
 		"""
 		Resolve the ordered triggers for a layer
 
 		Arguments:
-			layer {LayerObject}
+			layer {MapLayer}
 				-- The layer for which to resolve the ordered triggers
 		"""
 
@@ -198,16 +208,16 @@ class TriggerManager:
 	def resolveTrigger(
 		self, 
 		trigger: Trigger, 
-		caller: Optional['ExtensibleObject'] = None):
+		caller: Optional['MapComponent'] = None):
 		"""
 		Resolve a given Trigger for objects in objectManager
 		
 		Arguments:
 			objectManager {ObjectManager} 
-				-- The ObjectManager who's ExtensibleObjects we will be resolving the trigger for
+				-- The ObjectManager who's MapComponents we will be resolving the trigger for
 			trigger {Trigger} 
 				-- The trigger to resolve
-			caller {Optional[ExtensibleObject]}
+			caller {Optional[MapComponent]}
 				-- The object that called this trigger to be resolved
 					If the trigger is Ordered, this should be None
 					In which case it will be called with the trigger's parentLayer instead
@@ -219,6 +229,7 @@ class TriggerManager:
 		# Call the trigger's triggered function once, plus as many times as repeatCount
 		for i in range(1 + trigger.repeatCount):
 			if trigger.calls < trigger.maxCalls:
+				print('Trigger executed, name: ', trigger.triggerName, '; order: ', trigger.triggerOrder)
 				for (triggeredFunction, arg) in self.triggers[trigger]:
 					triggeredFunction(caller, arg)
 				trigger.calls += 1
@@ -226,6 +237,7 @@ class TriggerManager:
 		if trigger.continueFunction is not None and trigger.stopThreshold is not None:
 			while trigger.continueFunction(trigger.parentLayer, trigger.continueArgs) < trigger.stopThreshold:
 				if trigger.calls < trigger.maxCalls:
+					print('Trigger executed, name: ', trigger.triggerName, '; order: ', trigger.triggerOrder)
 					for (triggeredFunction, arg) in self.triggers[trigger]:
 						triggeredFunction(caller, arg)
 					trigger.calls += 1

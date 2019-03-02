@@ -1,6 +1,7 @@
 from typing import Tuple, List, Optional
 
 from utils.coordinate_grid import CartesianPoint
+from utils.helper_funcs import descendants
 
 class SelectionProperty:
 	"""
@@ -8,7 +9,7 @@ class SelectionProperty:
 	Most objects will have a list of property checkers that must be considered when determining placement.
 	
 	Children of this class should implement determineValue (and, optionally, additional helper functions)
-		This is the function that's called by ExtensibleObjects while determining locations etc.
+		This is the function that's called by MapComponents while determining locations etc.
 
 	TODO: Decide if these should just be functions instead
 		As classes, they support inheritance, which might be nice
@@ -16,13 +17,13 @@ class SelectionProperty:
 	
 	def determineValue(
 		self, 
-		caller: 'ExtensibleObject',
+		caller: 'MapComponent',
 		location: CartesianPoint) -> float:
 		"""
 		Abstract Method: Determine the value of a location for the property for an object.
 		
 		Arguments:
-			caller {ExtensibleObject}
+			caller {MapComponent}
 				-- The object you wish to check the value of the property for
 			location {CartesianPoint}
 				-- The potential location at which to check the value of the property
@@ -43,13 +44,13 @@ class DistanceToRoadSelection(SelectionProperty):
 
 	def determineValue(
 		self, 
-		caller: 'ExtensibleObject',
+		caller: 'MapComponent',
 		location: CartesianPoint) -> float:
 		"""
 		Determine the value of a location based on the distance to a road.
 		
 		Arguments:
-			caller {ExtensibleObject}
+			caller {MapComponent}
 				-- The object you wish to check the value of the property for
 			location {CartesianPoint}
 				-- The potential location at which to check the value of the property
@@ -62,11 +63,11 @@ class DistanceToRoadSelection(SelectionProperty):
 		caller.properties['associatedNetwork'] # The road network against which to check
 
 		raise NotImplementedError("This is not an abstract class, it's just not written yet.")
-
+		return(1)
 
 class SelectionPropertyManager:
 	"""
-	Class for associating strings (loaded by ExtensibleObjects from extension files)
+	Class for associating strings (loaded by MapComponents from extension files)
 		with their respective SelectionProperty classes, allowing them to be
 		arbitrarily called without full arbitrary function execution
 
@@ -75,4 +76,4 @@ class SelectionPropertyManager:
 			-- The dictionary of getter functions that can be called by SelectionProperty objects
 	"""
 
-	selectionProperties = {"DistanceToRoadSelection": DistanceToRoadSelection}
+	selectionProperties = {descendant.__name__:descendant for descendant in descendants(SelectionProperty)}

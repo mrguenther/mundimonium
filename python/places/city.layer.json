@@ -1,103 +1,118 @@
 {
-	"RoadNetwork": {
-		"Type": "NetworkObject",
-		"CreationTrigger": {
-			"TriggerType": "Ordered",
-			"TriggerOrder": 1
-		},
-		"Properties": {
-		},
-		"Triggers": {
-			"AddResidence": {
-				"TriggerType": "AfterCreation",
-				"RepeatCount": 50
-			}
-		}
-	},
-	
-	"RoadPoint": {
-		"Type": "PointObject",
-		"CreationTrigger": {
+	"FunctionTriggers": {
+		"associatePointWithNetwork": {
 			"TriggerType": "OnCalled",
-			"TriggerName": "AddRoadPoint"
-		},
-		"Properties": {
-			"associatedNetwork": {
-				"Origin": "PropertyFunction",
-				"PropertyFunction": "FindAndAssociateNetworkByName",
-				"args": {
-					"ObjectName": "RoadNetwork",
-					"ObjectInstance": 0
-				},
-				"Value": null
+			"TriggeredFunction": "AssociatePointWithNetwork",
+			"TriggeredFunctionArgs": {
+				"NetworkByProperty": "associatedNetwork"
 			}
-		},
-		"SelectionFactors": {
 		}
 	},
-
-	"CityTerrain": {
-		"Type": "TerrainObject",
-		"CreationTrigger": {
-			"TriggerType": "Ordered",
-			"TriggerOrder": 0
-		},
-		"Properties": {
-		}
-	},
-
-	"Residence": {
-		"Type": "PointObject",
-		"CreationTrigger": {
-			"TriggerType": "OnCalled",
-			"TriggerName": "AddResidence"
-		},
-		"Triggers": {
-			"AddRoadPoint": {
-				"TriggerType": "AfterCreation",
-				"Repeat": "None"
+	"MapComponents": {
+		"RoadNetwork": {
+			"Type": "MapNetwork",
+			"CreationTrigger": {
+				"TriggerType": "Ordered",
+				"TriggerOrder": 1
+			},
+			"Properties": {
+			},
+			"Triggers": {
+				"addResidence": {
+					"TriggerType": "AfterCreation",
+					"RepeatCount": 2
+				}
 			}
 		},
-		"Properties": {
-			"maxGrade": {
-				"Origin": "Static",
-				"Value": 15
+		
+		"RoadPoint": {
+			"Type": "MapPoint",
+			"CreationTrigger": {
+				"TriggerType": "OnCalled",
+				"TriggerName": "addRoadPoint"
 			},
-			"maxGradeUnit": {
-				"Origin": "Static",
-				"Value": "Percent"
+			"Properties": {
+				"associatedNetwork": {
+					"Origin": "PropertyFunction",
+					"PropertyFunction": "FindObjectByName",
+					"Args": {
+						"ObjectName": "RoadNetwork",
+						"ObjectInstance": 0
+					},
+					"Value": null
+				}
 			},
-			"associatedNetwork": {
-				"Origin": "PropertyFunction",
-				"PropertyFunction": "FindObjectByName",
-				"args": {
-					"ObjectName": "RoadNetwork",
-					"ObjectInstance": 0
-				},
-				"Value": null
+			"Triggers": {
+				"associatePointWithNetwork": {
+					"TriggerType": "AfterCreation"
+				}
 			},
-			"associatedTerrain": {
-				"Origin": "PropertyFunction",
-				"PropertyFunction": "FindObjectByName",
-				"args": {
-					"ObjectName": "CityTerrain",
-					"ObjectInstance": 0
-				},
-				"Value": null
+			"SelectionFactors": {
+				"RoadDistance": {
+					"Origin": "SelectionProperty",
+					"SelectionProperty": "DistanceToRoadSelection",
+					"Args": {},
+					"FactorWeight": 4.0
+				}
 			}
 		},
-		"SelectionFactors": {
-			"RoadDistance": {
-				"Origin": "SelectionProperty",
-				"SelectionProperty": "DistanceToRoadSelection",
-				"args": {},
-				"FactorWeight": 4.0
+
+		"CityTerrain": {
+			"Type": "MapTerrain",
+			"CreationTrigger": {
+				"TriggerType": "Ordered",
+				"TriggerOrder": 0
 			},
-			"MarketDistance": {
-				"Origin": "SelectionProperty",
-				"SelectionProperty": "DistanceToMarketSelection",
-				"args": {},
-				"FactorWeight": 2.0
+			"Properties": {
+			}
+		},
+
+		"Residence": {
+			"Type": "MapPoint",
+			"CreationTrigger": {
+				"TriggerType": "OnCalled",
+				"TriggerName": "addResidence"
+			},
+			"Triggers": {
+				"addRoadPoint": {
+					"TriggerType": "AfterCreation"
+				}
+			},
+			"Properties": {
+				"maxGrade": {
+					"Origin": "Static",
+					"Value": 15
+				},
+				"maxGradeUnit": {
+					"Origin": "Static",
+					"Value": "Percent"
+				},
+				"associatedNetwork": {
+					"Origin": "PropertyFunction",
+					"PropertyFunction": "FindObjectByName",
+					"Args": {
+						"ObjectName": "RoadNetwork",
+						"ObjectInstance": 0
+					},
+					"Value": null
+				},
+				"associatedTerrain": {
+					"Origin": "PropertyFunction",
+					"PropertyFunction": "FindObjectByName",
+					"Args": {
+						"ObjectName": "CityTerrain",
+						"ObjectInstance": 0
+					},
+					"Value": null
+				}
+			},
+			"SelectionFactors": {
+				"RoadDistance": {
+					"Origin": "SelectionProperty",
+					"SelectionProperty": "DistanceToRoadSelection",
+					"Args": {},
+					"FactorWeight": 4.0
+				}
 			}
 		}
 	}

@@ -1,15 +1,16 @@
 from typing import Tuple, List, Optional, Dict
 
 from utils.coordinate_grid import CartesianPoint
+from utils.helper_funcs import descendants
 
 class PropertyFunction:
 	"""
-	Base class for functions that ExtensibleObjects will call on load to determine object property values.
+	Base class for functions that MapComponents will call on load to determine object property values.
 		These are properties that vary by instance of any object, but may be checked by other functions,
 		for example while determining placement
 	
 	Children of this class should implement determineValue (and, optionally, additional helper functions)
-		This is the function that's called by ExtensibleObjects for each dynamic property in the object's property list
+		This is the function that's called by MapComponents for each dynamic property in the object's property list
 
 	Strictly speaking, SelectionProperties could be implemented as PropertyFunctions
 		But for now, they're their own, very-similar thing, as they differ just enough to be worth having their own classes
@@ -17,20 +18,20 @@ class PropertyFunction:
 	TODO: Decide if these should just be functions instead
 		As classes, they support inheritance, which might be nice
 
-	TODO: Decide if these should be read-only
-		For now they're not - Notably, FindAndAssociateNetworkByName is the current method of adding to NetworkObjects
+	TODO: Decide if these should be read-only and nullipotent
+		For now they're not - Notably, FindAndAssociateNetworkByName is the current method of adding to MapNetworks
 		But these types of functions could be moved into universal triggered functions instead
 	"""
 	
 	def determineValue(
 		self, 
-		caller: 'ExtensibleObject',
+		caller: 'MapComponent',
 		args: dict) -> any:
 		"""
 		Abstract Method: Evaluate a property for an object.
 		
 		Arguments:
-			caller {ExtensibleObject}
+			caller {MapComponent}
 				-- The object you wish to evaluate the property for
 			args {dict}
 				-- Dict of args passed along from the JSON object
@@ -50,13 +51,13 @@ class FindObjectByName(PropertyFunction):
 
 	def determineValue(
 		self, 
-		caller: 'ExtensibleObject',
-		args: Dict[str, any]) -> 'ExtensibleObject':
+		caller: 'MapComponent',
+		args: Dict[str, any]) -> 'MapComponent':
 		"""
 		Find an object. The expected usage of the object is to populate the associatedNetwork field.
 
 		Arguments:
-			caller {ExtensibleObject}
+			caller {MapComponent}
 				-- The object you wish to evaluate the property for
 			args {dict}
 				-- Dict of args passed along from the JSON object
@@ -65,7 +66,7 @@ class FindObjectByName(PropertyFunction):
 					'ObjectInstance': int
 
 		Returns:
-			namedObject {ExtensibleObject} 
+			namedObject {MapComponent} 
 				-- The object named
 		"""
 
@@ -73,36 +74,6 @@ class FindObjectByName(PropertyFunction):
 		instance = args['ObjectInstance']
 		return(caller.parentLayer.objectManager.objectsByName[name][instance])
 
-class FindAndAssociateNetworkByName(FindObjectByName):
-	"""
-	Class for finding a NetworkObject by name and instance number, 
-		then adding the calling PointObject as a node
-	"""
-
-	def determineValue(
-		self, 
-		caller: 'PointObject',
-		args: Dict[str, any]) -> 'NetworkObject':
-		"""
-		Find a NetworkObject and add caller as a node, then return the NetworkObject
-
-		Arguments:
-			caller {PointObject}
-				-- The object you wish to add as a node
-			args {dict}
-				-- Dict of args passed along from the JSON object
-				-- Required Values:
-					'ObjectName': str
-					'ObjectInstance': int
-
-		Returns:
-			networkToAssociate {NetworkObject} 
-				-- The NetworkObject found and added to
-		"""
-
-		networkToAssociate = super().determineValue(caller, args)
-		networkToAssociate.addPoint(caller)
-		return(networkToAssociate)
 
 class DetermineCreator(PropertyFunction):
 	"""
@@ -113,13 +84,13 @@ class DetermineCreator(PropertyFunction):
 
 	def determineValue(
 		self,
-		caller: 'ExtensibleObject',
-		args: dict) -> 'ExtensibleObject':
+		caller: 'MapComponent',
+		args: dict) -> 'MapComponent':
 		"""
 		Find the object that created caller
 
 		Returns:
-			creator {ExtensibleObject}
+			creator {MapComponent}
 				-- The object that created caller 
 		"""
 
@@ -128,7 +99,7 @@ class DetermineCreator(PropertyFunction):
 
 class PropertyFunctionManager:
 	"""
-	Class for associating strings (loaded by ExtensibleObjects from extension files)
+	Class for associating strings (loaded by MapComponents from extension files)
 		with their respective PropertyFunction classes, allowing them to be
 		arbitrarily called without full arbitrary function execution
 
@@ -137,7 +108,4 @@ class PropertyFunctionManager:
 			-- The dictionary of PropertyFunction classes, from which determineValue is called
 	"""
 
-	propertyFunctions = {
-		'FindObjectByName': FindObjectByName,
-		'DetermineCreator': DetermineCreator,
-		'FindAndAssociateNetworkByName': FindAndAssociateNetworkByName}
+	propertyFunctions = {descendant.__name__:descendant for descendant in descendants(PropertyFunction)}

@@ -10,7 +10,7 @@ import numpy
 import networkx
 
 
-class ExtensibleObject:
+class MapComponent:
 	"""
 	Base class for objects that are generated
 	These objects load most of their properties from extensible JSON files
@@ -23,14 +23,14 @@ class ExtensibleObject:
 		objectName {str}
 			-- The name of the object (e.g. Residence, RoadNetwork)
 		jsonObject {dict}
-			-- The JSON Object from which to load the ExtensibleObject
-		parentLayer {Optional[LayerObject]}
+			-- The JSON Object from which to load the MapComponent
+		parentLayer {Optional[MapLayer]}
 			-- The parent layer of the object
 				This should only be None in the case of the highest-tier layer
-		creator {Optional[ExtensibleObject]}
-			-- The ExtensibleObject creating this new ExtensibleObject
-				TriggerManager, while usually being the object actually instantiating a new ExtensibleObject,
-				should set creator to the ExtensibleObject that activated the OnCalled CreationTrigger,
+		creator {Optional[MapComponent]}
+			-- The MapComponent creating this new MapComponent
+				TriggerManager, while usually being the object actually instantiating a new MapComponent,
+				should set creator to the MapComponent that activated the OnCalled CreationTrigger,
 				or the parent layer if it was an Ordered trigger
 		afterCreationTriggers {list}
 			-- Triggers to be called on object creation
@@ -40,8 +40,8 @@ class ExtensibleObject:
 		self,
 		objectName: str,
 		jsonObject: dict,
-		parentLayer: Optional[LayerObject] = None,
-		creator: Optional[ExtensibleObject] = None):
+		parentLayer: Optional['MapLayer'] = None,
+		creator: Optional['MapComponent'] = None):
 
 		self.properties = {
 			'creator': creator}
@@ -50,12 +50,14 @@ class ExtensibleObject:
 		self.selectionFactors = None
 		self.creator = creator
 		self.parentLayer = parentLayer
+		if parentLayer is not None:
+			self.parentLayer.addObject(self)
 		self.afterCreationTriggers = []
 		self.initializeObject(jsonObject)
 
 	def loadObject(self, jsonObject: dict):
 		"""
-		Load an ExtensibleObject from a given JSON Object
+		Load an MapComponent from a given JSON Object
 		
 		Arguments:
 			jsonObject {[type]} -- [description]
@@ -91,6 +93,8 @@ class ExtensibleObject:
 
 		# TODO: Flesh this out for more trigger varieties
 
+		# TODO: Probably move this whole chunk into the Trigger or TriggerManager class
+		# Give them a loadFromJSON method or something, then just do a nice short call here
 		for triggerName, trigger in jsonTriggers.items():
 			repeatCount = 0
 			if 'RepeatCount' in trigger: repeatCount = trigger['RepeatCount']
@@ -102,13 +106,12 @@ class ExtensibleObject:
 			continueArgs = None
 			if 'ContinueArgs' in trigger: continueArgs = trigger['ContinueArgs']
 			if trigger['TriggerType'] == 'AfterCreation':
-				# TODO: Have this construct the correct type of trigger (repeating, etc.)
 				triggerObject = Trigger(
 					self.parentLayer, 
 					repeatCount=repeatCount, 
 					stopThreshold=stopThreshold, 
 					continueFunction=continueFunction, 
-					continueArgs=continueArgs, 
+					continueArgs=continueArgs,
 					triggerName=triggerName)
 				self.afterCreationTriggers.append(triggerObject)
 
@@ -152,7 +155,7 @@ class ExtensibleObject:
 		"""
 		pass
 
-class NetworkObject(ExtensibleObject):
+class MapNetwork(MapComponent):
 	"""[summary]
 	
 	Attributes:
@@ -166,19 +169,19 @@ class NetworkObject(ExtensibleObject):
 
 		self.graph = networkx.Graph()
 
-	def addPoint(self, point: 'PointObject'):
+	def addPoint(self, point: 'MapPoint'):
 		"""[summary]
 		
 		Arguments:
-			point {PointObject} -- [description]
+			point {MapPoint} -- [description]
 		"""
 
 		self.graph.add_node(point)
 
 
-class TerrainObject(ExtensibleObject): pass
+class MapTerrain(MapComponent): pass
 
-class LayerObject(ExtensibleObject):
+class MapLayer(MapComponent):
 	"""[summary]
 
 	Attributes:
@@ -197,11 +200,25 @@ class LayerObject(ExtensibleObject):
 		self.objectManager = ObjectManager(self, self.properties['layerFilePath'])
 		self.objectManager.triggerManager.resolveOrdered(self)
 
-	def loadOtherObject(self, caller: ExtensibleObject, objectData: Tuple[str, dict]):
+	def addObject(self, mapObject: MapComponent):
+		"""
+		Add a MapComponent to the layer's ObjectManager
+		
+		Arguments:
+			objectName {[type]} -- [description]
+		"""
+
+		self.objectManager.objects.append(mapObject)
+		if mapObject.objectName not in self.objectManager.objectsByName:
+			self.objectManager.objectsByName[mapObject.objectName] = []
+		self.objectManager.objectsByName[mapObject.objectName].append(mapObject)
+
+
+	def loadOtherObject(self, caller: MapComponent, objectData: Tuple[str, dict]):
 		"""[summary]
 		
 		Arguments:
-			caller {ExtensibleObject} -- [description]
+			caller {MapComponent} -- [description]
 			objectData {tuple[dict, str]}
 				(objectName, objectInfo)
 		"""
@@ -212,30 +229,28 @@ class LayerObject(ExtensibleObject):
 		# But then if we decide to have different __init__ args or something for a type of object later
 		# everything becomes a massive pain
 		# So for now I'm going with this
-		if objectInfo['Type'] == 'PointObject':
-			newObject = PointObject(objectName, objectInfo, self, caller)
-		elif objectInfo['Type'] == 'NetworkObject':
-			newObject = NetworkObject(objectName, objectInfo, self, caller)
-		elif objectInfo['Type'] == 'TerrainObject':
-			newObject = TerrainObject(objectName, objectInfo, self, caller)
-		elif objectInfo['Type'] == 'LayerObject':
-			newObject = LayerObject(objectName, objectInfo, self, caller)
+		if objectInfo['Type'] == 'MapPoint':
+			MapPoint(objectName, objectInfo, self, caller)
+		elif objectInfo['Type'] == 'MapNetwork':
+			MapNetwork(objectName, objectInfo, self, caller)
+		elif objectInfo['Type'] == 'MapTerrain':
+			MapTerrain(objectName, objectInfo, self, caller)
+		elif objectInfo['Type'] == 'MapLayer':
+			MapLayer(objectName, objectInfo, self, caller)
 		else:
 			raise KeyError('Invalid object Type %(type)s for object %(objectName)s' % 
 						{'type': str(objectInfo['Type']),
 						'objectName': str(objectName)})
-		self.objectManager.objects.append(newObject)
-		self.objectManager.objectsByName[objectName].append(newObject)
 
 
-class PointObject(ExtensibleObject):
+class MapPoint(MapComponent):
 	"""
 	Class for objects that exist at a specific point
 	For example, buildings
 	
 	Attributes:
 		location {CartesianPoint}
-			-- Location of the PointObject
+			-- Location of the MapPoint
 	"""
 
 	def subclassInit(self):
@@ -271,9 +286,9 @@ class PointObject(ExtensibleObject):
 
 		potentialLocations = self.findPotentialLocations()
 		locationValues = self.getValues(potentialLocations)
-		values = numpy.array(locationValues.values())
+		values = numpy.array(list(locationValues.values()))
 		values /= values.sum()
-		self.location = numpy.random.choice(locationValues.keys,1,p=values)[0]
+		self.location = numpy.random.choice(list(locationValues.keys()),1,p=values)[0]
 
 
 	def getValue(self, potentialLocation: CartesianPoint) -> float:
@@ -302,7 +317,7 @@ class PointObject(ExtensibleObject):
 
 		return(valueTot)
 
-	def getValues(self, potentialLocations: List[CartesianPoint]) -> Dict[CartesianPoint: float]:
+	def getValues(self, potentialLocations: List[CartesianPoint]) -> dict:
 		"""
 		Calculate an array of values for each potential location in an array thereof
 		
