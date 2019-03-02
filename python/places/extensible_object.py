@@ -1,7 +1,6 @@
 from typing import Tuple, List, Optional, Dict
 
 from utils.coordinate_grid import CartesianPoint
-from road_graph import RoadGraph
 from selection_properties import SelectionPropertyManager
 from property_functions import PropertyFunctionManager
 from trigger_functions import TriggerThresholdManager
