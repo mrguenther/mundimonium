@@ -1,13 +1,21 @@
 from typing import Tuple, List, Optional, Dict
 
-from utils.coordinate_grid import CartesianPoint
-from selection_properties import SelectionPropertyManager
-from property_functions import PropertyFunctionManager
-from trigger_functions import TriggerThresholdManager
-from object_manager import ObjectManager, Trigger
+from .utils.coordinate_grid import CartesianPoint
+from .extendable_python.placements.placement_functions import SelectionPropertyManager
+from .extendable_python.properties.property_functions import PropertyFunctionManager
+from .extendable_python.triggers.trigger_functions import TriggerThresholdManager
+from .layer_classes import LayerManager, Trigger
 import numpy
 import networkx
+import warnings
 
+warnings.simplefilter('always', UserWarning)
+
+# Force warnings.warn() to omit the source code line in the message
+formatwarning_orig = warnings.formatwarning
+warnings.formatwarning = lambda message, category, filename, lineno, line=None: \
+	formatwarning_orig(message, category, filename, lineno, line='')
+# TODO (long-term): Catch warnings and do something more user-palatable with them
 
 class MapComponent:
 	"""
@@ -17,30 +25,24 @@ class MapComponent:
 		as well as a mapping of the function names to the functions themselves, for calling by extension files
 
 	Attributes:
-		properties {dict[str: Any]}
-			-- Dictionary of properties loaded by extension files
-		objectName {str}
-			-- The name of the object (e.g. Residence, RoadNetwork)
-		jsonObject {dict}
-			-- The JSON Object from which to load the MapComponent
-		parentLayer {Optional[MapLayer]}
-			-- The parent layer of the object
+		properties (dict[str: Any]): Dictionary of properties loaded by extension files
+		objectName (str): The name of the object (e.g. Residence, RoadNetwork)
+		jsonObject (dict): The JSON Object from which to load the MapComponent
+		parentLayer (Optional[MapLayer]): The parent layer of the object
 				This should only be None in the case of the highest-tier layer
-		creator {Optional[MapComponent]}
-			-- The MapComponent creating this new MapComponent
+		creator (Optional[MapComponent]): The MapComponent creating this new MapComponent
 				TriggerManager, while usually being the object actually instantiating a new MapComponent,
 				should set creator to the MapComponent that activated the OnCalled CreationTrigger,
 				or the parent layer if it was an Ordered trigger
-		afterCreationTriggers {list}
-			-- Triggers to be called on object creation
+		afterCreationTriggers (list): Triggers to be called on object creation
 	"""
 	
 	def __init__(
-		self,
-		objectName: str,
-		jsonObject: dict,
-		parentLayer: Optional['MapLayer'] = None,
-		creator: Optional['MapComponent'] = None):
+			self,
+			objectName: str,
+			jsonObject: dict,
+			parentLayer: Optional['MapLayer'] = None,
+			creator: Optional['MapComponent'] = None):
 
 		self.properties = {
 			'creator': creator}
@@ -68,8 +70,18 @@ class MapComponent:
 			elif data['Origin'] == 'PropertyFunction':
 				funcName = data['PropertyFunction']
 				args = data['Args']
-				result = PropertyFunctionManager.propertyFunctions[funcName].determineValue(None, self, args)
-				self.properties[prop] = result
+				try:
+					result = PropertyFunctionManager.propertyFunctions[funcName].determineValue(None, self, args)
+					self.properties[prop] = result
+				except (Exception) as e:
+					warnings.warn('''%(eType)s raised while getting property %(prop)s: 
+					%(eStr)s
+					Using default value of %(value)s''' %
+						{'eType': type(e),
+						'prop': prop,
+						'eStr': str(e),
+						'value': str(data['Value'])})
+					self.properties[prop] = data['Value']
 			else:
 				raise KeyError('Invalid Origin value %(originValue)s for property %(propertyName)s' % 
 					{'originValue': str(data['Origin']),
@@ -86,8 +98,7 @@ class MapComponent:
 			There may later be additional types of triggers to be called
 		
 		Arguments:
-			jsonTriggers {dict} 
-				-- Dict of triggers from layer.json files
+			jsonTriggers (dict): Dict of triggers from layer.json files
 		"""
 
 		# TODO: Flesh this out for more trigger varieties
@@ -143,7 +154,7 @@ class MapComponent:
 		"""
 
 		for trigger in self.afterCreationTriggers:
-			self.parentLayer.objectManager.triggerManager.resolveTrigger(trigger, self)
+			self.parentLayer.layerManager.triggerManager.resolveTrigger(trigger, self)
 
 	def placeObject(self):
 		"""
@@ -158,8 +169,7 @@ class MapNetwork(MapComponent):
 	"""[summary]
 	
 	Attributes:
-		graph {networkx.Graph}
-			-- The network this object is built around
+		graph (networkx.Graph): The network this object is built around
 	"""
 
 	def subclassInit(self):
@@ -178,39 +188,53 @@ class MapNetwork(MapComponent):
 		self.graph.add_node(point)
 
 
-class MapTerrain(MapComponent): pass
+class MapTerrain(MapComponent):
+	"""[summary]
+	
+	Attributes:
+		heightmap (Dict[Tuple[int, int]: float]): Heightmap for the terrain
+	"""
+
+	def subclassInit(self):
+		"""
+		Do terrain-specific init stuff
+		For now, that's limited to creating an empty heightmap dict, to be filled by a triggered function later
+		While the heightmap could be generated here instead, using a triggered function lets us more flexibly
+		change algorithms and parameters passed to those algorithms
+		"""
+
+		self.heightmap = {}
+
 
 class MapLayer(MapComponent):
 	"""[summary]
 
 	Attributes:
-		objectManager {ObjectManager}
-			-- 
+		layerManager (LayerManager): 
 	"""
 
 	def subclassInit(self):
 		"""[summary]
 		
 		Arguments:
-			layerFilePath {str} 
-				-- The filepath of the layer JSON file from which to load... everything in the layer
+			layerFilePath (str): The filepath of the layer JSON file from which to load... everything in the layer
 		"""
 
-		self.objectManager = ObjectManager(self, self.properties['layerFilePath'])
-		self.objectManager.triggerManager.resolveOrdered(self)
+		self.layerManager = LayerManager(self, self.properties['layerFilePath'])
+		self.layerManager.triggerManager.resolveOrdered(self)
 
 	def addObject(self, mapObject: MapComponent):
 		"""
-		Add a MapComponent to the layer's ObjectManager
+		Add a MapComponent to the layer's LayerManager
 		
 		Arguments:
 			objectName {[type]} -- [description]
 		"""
 
-		self.objectManager.objects.append(mapObject)
-		if mapObject.objectName not in self.objectManager.objectsByName:
-			self.objectManager.objectsByName[mapObject.objectName] = []
-		self.objectManager.objectsByName[mapObject.objectName].append(mapObject)
+		self.layerManager.objects.append(mapObject)
+		if mapObject.objectName not in self.layerManager.objectsByName:
+			self.layerManager.objectsByName[mapObject.objectName] = []
+		self.layerManager.objectsByName[mapObject.objectName].append(mapObject)
 
 
 	def loadOtherObject(self, caller: MapComponent, objectData: Tuple[str, dict]):
@@ -248,8 +272,7 @@ class MapPoint(MapComponent):
 	For example, buildings
 	
 	Attributes:
-		location {CartesianPoint}
-			-- Location of the MapPoint
+		location (CartesianPoint): Location of the MapPoint
 	"""
 
 	def subclassInit(self):
@@ -265,8 +288,7 @@ class MapPoint(MapComponent):
 			Ideally, this will use some sort of heuristics to narrow down the options from 'everywhere'
 
 		Returns:
-			potentialLocations {List[CartesianPoint]}
-				-- List of potential locations
+			potentialLocations (List[CartesianPoint]): List of potential locations
 		"""
 
 		# TODO: Make this actually do something
@@ -304,9 +326,19 @@ class MapPoint(MapComponent):
 
 		for selectionFactor, data in self.selectionFactors.items():
 			if data['Origin'] == 'SelectionProperty':
+				factorWeight = 1.0
+				if 'FactorWeight' in data: factorWeight = data['FactorWeight']
 				funcName = data['SelectionProperty']
-				result = SelectionPropertyManager.selectionProperties[funcName].determineValue(None, self, potentialLocation)
-				value = result * data['FactorWeight']
+				try:
+					result = SelectionPropertyManager.selectionProperties[funcName].determineValue(None, self, potentialLocation)
+					value = result * factorWeight
+				except (Exception) as e:
+					warnings.warn('''%(eType)s raised while getting value: 
+					%(eStr)s
+					Defaulting to value of 0''' %
+						{'eType': type(e),
+						'eStr': str(e)})
+					value = 0
 			else:
 				raise KeyError('Invalid Origin value %(originValue)s for selectionFactor %(selectionFactor)s' % 
 					{'originValue': str(data['Origin']),
@@ -321,15 +353,13 @@ class MapPoint(MapComponent):
 		Calculate an array of values for each potential location in an array thereof
 		
 		Arguments:
-			potentialLocations {List[CartesianPoint]} 
-				-- A list of locations at which to check each location factor
+			potentialLocations (List[CartesianPoint]): A list of locations at which to check each location factor
 					This should preferably be chosen somewhat heuristically
 						Or at a minimum narrowed down significantly from all points
 					We may also want to save results to the local point, for future reference
 		
 		Returns:
-			values {dict[CartesianPoint: float]} 
-				-- A dict of the resulting values (keyed by location), NOT yet normalized
+			values (dict[CartesianPoint: float]): A dict of the resulting values (keyed by location), NOT yet normalized
 					TODO: Consider returning potentialLocations as well, so we can more easily reference the chosen spot
 		"""
 

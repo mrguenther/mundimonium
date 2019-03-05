@@ -6,6 +6,13 @@
 			"TriggeredFunctionArgs": {
 				"NetworkByProperty": "associatedNetwork"
 			}
+		},
+		"generateSimplexHeightmap": {
+			"TriggerType": "OnCalled",
+			"TriggeredFunction": "GenerateSimplexHeightmap",
+			"TriggeredFunctionArgs": {
+				"Algorithm": "SimplexNoise"
+			}
 		}
 	},
 	"MapComponents": {
@@ -63,7 +70,60 @@
 				"TriggerType": "Ordered",
 				"TriggerOrder": 0
 			},
+			"Triggers": {
+				"generateSimplexHeightmap": {
+					"TriggerType": "AfterCreation"
+				}
+			},
 			"Properties": {
+				"size": {
+					"Origin": "PropertyFunction",
+					"PropertyFunction": "GetTerrainSize",
+					"Args": {
+					},
+					"Value": [1024, 1024]
+				},
+				"seed": {
+					"Origin": "Static",
+					"Value": 924
+				}
+			}
+		},
+
+		"DEPRECATED": {
+			"Comment": "This is a different option on how to go about terrain gen. It would be less efficient and less robust, so for now I'm thinking of another option. However, doing it this way *would* be more generic, and, more importantly, would allow for more complex interactions with individual points in the heightmap.",
+			"TerrainPoint": {
+				"Type": "MapPoint",
+				"CreationTrigger": {
+					"TriggerType": "OnCalled",
+					"TriggerName": "addTerrainPoint"
+				},
+				"Properties": {
+					"associatedTerrain": {
+						"Origin": "PropertyFunction",
+						"PropertyFunction": "FindObjectByName",
+						"Args": {
+							"ObjectName": "CityTerrain",
+							"ObjectInstance": 0
+						},
+						"Value": null
+					}
+				},
+				"Triggers": {
+					"associatePointWithTerrain": {
+						"TriggerType": "AfterCreation"
+					},
+					"generateTerrainPoint": {
+						"TriggerType": "AfterCreation"
+					}
+				},
+				"SelectionFactors": {
+					"UngeneratedPoint": {
+						"Origin": "SelectionProperty",
+						"SelectionProperty": "UngeneratedPointSelection",
+						"Args": {}
+					}
+				}
 			}
 		},
 
