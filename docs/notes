@@ -2,7 +2,7 @@ Triggers: How they work
 
 JSON components have two primary fields that they use to manage triggers: CreationTrigger and Triggers
 	CreationTriggers are loaded by the layer object as soon as it is instantiated
-		More specifically, by the ObjectManager
+		More specifically, by the LayerManager
 		They have two fields, TriggerType and either TriggerName or TriggerOrder
 		TriggerType can be OnCalled or Ordered
 			If OnCalled, they will have a TriggerName

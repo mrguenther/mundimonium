@@ -1,7 +1,7 @@
 from typing import Tuple, List, Optional, Dict
 
-from utils.coordinate_grid import CartesianPoint
-from utils.helper_funcs import descendants
+from .utils.coordinate_grid import CartesianPoint
+from .utils.helper_funcs import descendants
 
 class PropertyFunction:
 	"""
@@ -24,21 +24,18 @@ class PropertyFunction:
 	"""
 	
 	def determineValue(
-		self, 
-		caller: 'MapComponent',
-		args: dict) -> any:
+			self, 
+			caller: 'MapComponent',
+			args: dict) -> any:
 		"""
 		Abstract Method: Evaluate a property for an object.
 		
 		Arguments:
-			caller {MapComponent}
-				-- The object you wish to evaluate the property for
-			args {dict}
-				-- Dict of args passed along from the JSON object
+			caller (MapComponent): The object you wish to evaluate the property for
+			args (dict): Dict of args passed along from the JSON object
 
 		Returns:
-			value {any}
-				-- The value of the property. This might be anything.
+			value (any): The value of the property. This might be anything.
 		"""
 
 		raise NotImplementedError
@@ -50,29 +47,26 @@ class FindObjectByName(PropertyFunction):
 	"""
 
 	def determineValue(
-		self, 
-		caller: 'MapComponent',
-		args: Dict[str, any]) -> 'MapComponent':
+			self, 
+			caller: 'MapComponent',
+			args: Dict[str, any]) -> 'MapComponent':
 		"""
 		Find an object. The expected usage of the object is to populate the associatedNetwork field.
 
 		Arguments:
-			caller {MapComponent}
-				-- The object you wish to evaluate the property for
-			args {dict}
-				-- Dict of args passed along from the JSON object
+			caller (MapComponent): The object you wish to evaluate the property for
+			args (dict): Dict of args passed along from the JSON object
 				-- Required Values:
 					'ObjectName': str
 					'ObjectInstance': int
 
 		Returns:
-			namedObject {MapComponent} 
-				-- The object named
+			namedObject (MapComponent): The object named
 		"""
 
 		name = args['ObjectName']
 		instance = args['ObjectInstance']
-		return(caller.parentLayer.objectManager.objectsByName[name][instance])
+		return(caller.parentLayer.layerManager.objectsByName[name][instance])
 
 
 class DetermineCreator(PropertyFunction):
@@ -83,15 +77,14 @@ class DetermineCreator(PropertyFunction):
 	"""
 
 	def determineValue(
-		self,
-		caller: 'MapComponent',
-		args: dict) -> 'MapComponent':
+			self,
+			caller: 'MapComponent',
+			args: dict) -> 'MapComponent':
 		"""
 		Find the object that created caller
 
 		Returns:
-			creator {MapComponent}
-				-- The object that created caller 
+			creator (MapComponent): The object that created caller 
 		"""
 
 		raise NotImplementedError("This is not an abstract class, it's just not written yet.")
@@ -104,8 +97,7 @@ class PropertyFunctionManager:
 		arbitrarily called without full arbitrary function execution
 
 	Attributes:
-		propertyFunctions {dict[str: function]}
-			-- The dictionary of PropertyFunction classes, from which determineValue is called
+		propertyFunctions (dict[str: function]): The dictionary of PropertyFunction classes, from which determineValue is called
 	"""
 
 	propertyFunctions = {descendant.__name__:descendant for descendant in descendants(PropertyFunction)}
