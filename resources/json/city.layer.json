@@ -4,12 +4,23 @@
 			"TriggerType": "OnCalled",
 			"TriggeredFunction": "AssociatePointWithNetwork",
 			"TriggeredFunctionArgs": {
-				"NetworkByProperty": "associatedNetwork"
 			}
 		},
-		"generateSimplexHeightmap": {
+		"addEdgeBetweenCreatorAndSelfToNetwork": {
 			"TriggerType": "OnCalled",
-			"TriggeredFunction": "GenerateSimplexHeightmap",
+			"TriggeredFunction": "AddEdgeBetweenCreatorAndSelfToNetwork",
+			"TriggeredFunctionArgs": {
+			}
+		},
+		"addEdgeFromSelfToExtantPartOfNetwork": {
+			"TriggerType": "OnCalled",
+			"TriggeredFunction": "AddEdgeFromSelfToExtantNetwork",
+			"TriggeredFunctionArgs": {
+			}
+		},
+		"generateSimplexTerrain": {
+			"TriggerType": "OnCalled",
+			"TriggeredFunction": "GenerateSimplexTerrain",
 			"TriggeredFunctionArgs": {
 				"Algorithm": "SimplexNoise"
 			}
@@ -23,20 +34,28 @@
 				"TriggerOrder": 1
 			},
 			"Properties": {
+				"maxGrade": {
+					"Origin": "Static",
+					"Value": 0.05
+				},
+				"maxEdgeLength": {
+					"Origin": "Static",
+					"Value": 8.0
+				}
 			},
 			"Triggers": {
 				"addResidence": {
 					"TriggerType": "AfterCreation",
-					"RepeatCount": 2
+					"RepeatCount": 3
 				}
 			}
 		},
 		
-		"RoadPoint": {
+		"RoadBranchPoint": {
 			"Type": "MapPoint",
 			"CreationTrigger": {
 				"TriggerType": "OnCalled",
-				"TriggerName": "addRoadPoint"
+				"TriggerName": "addRoadBranchPoint"
 			},
 			"Properties": {
 				"associatedNetwork": {
@@ -52,14 +71,69 @@
 			"Triggers": {
 				"associatePointWithNetwork": {
 					"TriggerType": "AfterCreation"
+				},
+				"addEdgeBetweenCreatorAndSelfToNetwork": {
+					"TriggerType": "AfterCreation"
+				},
+				"addEdgeFromSelfToExtantPartOfNetwork": {
+					"TriggerType": "AfterCreation",
+					"ContinueFunction": "DistanceToOtherConnectedComponent",
+					"StopThreshold": 8.0
+				},
+				"addRoadBranchPoint": {
+					"TriggerType": "AfterCreation",
+					"ContinueFunction": "AssociatedNetworkIsConnected",
+					"StopThreshold": 1.0
 				}
 			},
 			"SelectionFactors": {
-				"RoadDistance": {
+				"RoadBranchPoint": {
 					"Origin": "SelectionProperty",
-					"SelectionProperty": "DistanceToRoadSelection",
+					"SelectionProperty": "RoadBranchPointSelection",
 					"Args": {},
-					"FactorWeight": 4.0
+					"FactorWeight": 1.0
+				}
+			}
+		},
+
+		"RoadTerminus": {
+			"Type": "MapPoint",
+			"CreationTrigger": {
+				"TriggerType": "OnCalled",
+				"TriggerName": "addRoadTerminus"
+			},
+			"Properties": {
+				"associatedNetwork": {
+					"Origin": "PropertyFunction",
+					"PropertyFunction": "FindObjectByName",
+					"Args": {
+						"ObjectName": "RoadNetwork",
+						"ObjectInstance": 0
+					},
+					"Value": null
+				}
+			},
+			"Triggers": {
+				"associatePointWithNetwork": {
+					"TriggerType": "AfterCreation"
+				},
+				"addEdgeFromSelfToExtantPartOfNetwork": {
+					"TriggerType": "AfterCreation",
+					"ContinueFunction": "DistanceToOtherConnectedComponent",
+					"StopThreshold": 8.0
+				},
+				"addRoadBranchPoint": {
+					"TriggerType": "AfterCreation",
+					"ContinueFunction": "AssociatedNetworkIsConnected",
+					"StopThreshold": 1.0
+				}
+			},
+			"SelectionFactors": {
+				"CreatorLocation": {
+					"Origin": "SelectionProperty",
+					"SelectionProperty": "CreatorLocationSelection",
+					"Args": {},
+					"FactorWeight": 1.0
 				}
 			}
 		},
@@ -71,7 +145,7 @@
 				"TriggerOrder": 0
 			},
 			"Triggers": {
-				"generateSimplexHeightmap": {
+				"generateSimplexTerrain": {
 					"TriggerType": "AfterCreation"
 				}
 			},
@@ -90,43 +164,6 @@
 			}
 		},
 
-		"DEPRECATED": {
-			"Comment": "This is a different option on how to go about terrain gen. It would be less efficient and less robust, so for now I'm thinking of another option. However, doing it this way *would* be more generic, and, more importantly, would allow for more complex interactions with individual points in the heightmap.",
-			"TerrainPoint": {
-				"Type": "MapPoint",
-				"CreationTrigger": {
-					"TriggerType": "OnCalled",
-					"TriggerName": "addTerrainPoint"
-				},
-				"Properties": {
-					"associatedTerrain": {
-						"Origin": "PropertyFunction",
-						"PropertyFunction": "FindObjectByName",
-						"Args": {
-							"ObjectName": "CityTerrain",
-							"ObjectInstance": 0
-						},
-						"Value": null
-					}
-				},
-				"Triggers": {
-					"associatePointWithTerrain": {
-						"TriggerType": "AfterCreation"
-					},
-					"generateTerrainPoint": {
-						"TriggerType": "AfterCreation"
-					}
-				},
-				"SelectionFactors": {
-					"UngeneratedPoint": {
-						"Origin": "SelectionProperty",
-						"SelectionProperty": "UngeneratedPointSelection",
-						"Args": {}
-					}
-				}
-			}
-		},
-
 		"Residence": {
 			"Type": "MapPoint",
 			"CreationTrigger": {
@@ -134,19 +171,11 @@
 				"TriggerName": "addResidence"
 			},
 			"Triggers": {
-				"addRoadPoint": {
+				"addRoadTerminus": {
 					"TriggerType": "AfterCreation"
 				}
 			},
 			"Properties": {
-				"maxGrade": {
-					"Origin": "Static",
-					"Value": 15
-				},
-				"maxGradeUnit": {
-					"Origin": "Static",
-					"Value": "Percent"
-				},
 				"associatedNetwork": {
 					"Origin": "PropertyFunction",
 					"PropertyFunction": "FindObjectByName",
@@ -169,9 +198,15 @@
 			"SelectionFactors": {
 				"RoadDistance": {
 					"Origin": "SelectionProperty",
-					"SelectionProperty": "DistanceToRoadSelection",
+					"SelectionProperty": "TraversableDistanceToRoadSelection",
 					"Args": {},
-					"FactorWeight": 4.0
+					"FactorWeight": 2.0
+				},
+				"MaxGrade": {
+					"Origin": "SelectionProperty",
+					"SelectionProperty": "GradeSelection",
+					"Args": {},
+					"FactorWeight": 1.0
 				}
 			}
 		}

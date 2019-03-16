@@ -1,6 +1,7 @@
 from typing import Tuple, List, Optional, Callable
 import json
-from .extendable_python.triggers.trigger_functions import TriggeredFunctionManager
+from .component_functions import ComponentFunctionManager
+import warnings
 
 class LayerManager:
 	"""
@@ -25,6 +26,19 @@ class LayerManager:
 
 		self.loadLayerFile(layerFilePath)
 		self.loadTriggers(self.layerFile)
+
+	def addObject(self, mapObject: 'MapComponent'):
+		"""
+		Add a MapComponent to the object lists
+		
+		Arguments:
+			objectName {[type]} -- [description]
+		"""
+
+		self.objects.append(mapObject)
+		if mapObject.objectName not in self.objectsByName:
+			self.objectsByName[mapObject.objectName] = []
+		self.objectsByName[mapObject.objectName].append(mapObject)
 
 	def loadLayerFile(self, path: str):
 		"""[summary]
@@ -63,7 +77,7 @@ class LayerManager:
 		for triggerName, triggerToLoad in layerFile['FunctionTriggers'].items():
 			triggerOrder = None
 			if 'TriggerOrder' in triggerToLoad: triggerOrder = triggerToLoad['TriggerOrder']
-			triggeredFunction = TriggeredFunctionManager.triggeredFunctions[triggerToLoad['TriggeredFunction']]().executeFunction
+			triggeredFunction = ComponentFunctionManager.componentFunctions[triggerToLoad['TriggeredFunction']]().execute
 			triggeredFunctionArgs = triggerToLoad['TriggeredFunctionArgs']
 
 			trigger = Trigger(self.layer, triggerName=triggerName, triggerOrder=triggerOrder)
@@ -84,7 +98,6 @@ class Trigger:
 		stopThreshold {Optional[float]}
 		continueFunction (Optional[Callable[['MapLayer', dict], float]]): Function whose value is to be compared against the stopThreshold
 				Trigger will be called until the return of this function exceeds stopThreshold
-				First argument will always be parentLayer
 		continueArgs (Optional[dict]): Dict of args to be sent to continueFunction
 		maxCalls {Optional[int]} (default: 10000)
 			-- Maximum number of times the trigger can be called
@@ -133,6 +146,16 @@ class Trigger:
 		if type(self) == type(other): return self.__hash__() == other.__hash__()
 		return False
 
+	def __str__(self):
+		"""
+		Pretty-printable(-ish) representation of the trigger.
+		"""
+
+		outStr = ('Trigger(triggerName=%(triggerName)s, triggerOrder=%(triggerOrder)s, parentLayer=%(parentLayer)s)' %
+			{'triggerName': self.triggerName,
+			'triggerOrder': self.triggerOrder,
+			'parentLayer': self.parentLayer})
+		return(outStr)
 
 
 class TriggerManager:
@@ -186,7 +209,7 @@ class TriggerManager:
 
 		for order in range(self.orderedMax[layer]):
 			trigger = Trigger(layer, triggerOrder = order)
-			print('Trigger called, name: ', trigger.triggerName, '; order: ', trigger.triggerOrder)
+			print('Trigger called: ' + str(trigger))
 			if trigger in self.triggers:
 				self.resolveTrigger(trigger, caller = layer)
 
@@ -206,23 +229,47 @@ class TriggerManager:
 					In which case it will be called with the trigger's parentLayer instead
 		"""
 
+		#print('Trigger resolved: ' + str(trigger))
+
 		if caller is None:
 			caller = trigger.parentLayer
 
-		# Call the trigger's triggered function once, plus as many times as repeatCount
-		for _ in range(1 + trigger.repeatCount):
-			if trigger.calls < trigger.maxCalls:
-				print('Trigger executed, name: ', trigger.triggerName, '; order: ', trigger.triggerOrder)
-				for (triggeredFunction, arg) in self.triggers[trigger]:
-					triggeredFunction(caller, arg)
-				trigger.calls += 1
-		# If the trigger has a function threshold, repeat the trigger until it's met
-		if trigger.continueFunction is not None and trigger.stopThreshold is not None:
-			while trigger.continueFunction(trigger.parentLayer, trigger.continueArgs) < trigger.stopThreshold:
-				if trigger.calls < trigger.maxCalls:
-					print('Trigger executed, name: ', trigger.triggerName, '; order: ', trigger.triggerOrder)
-					for (triggeredFunction, arg) in self.triggers[trigger]:
-						triggeredFunction(caller, arg)
-					trigger.calls += 1
+		try:
+			# Call the trigger's triggered function as many times as repeatCount
+			for _ in range(trigger.repeatCount):
+				self.executeTrigger(trigger, caller)
+			# If the trigger has a function threshold, repeat the trigger until it's met
+			if trigger.continueFunction is not None and trigger.stopThreshold is not None:
+				while trigger.continueFunction(caller, trigger.continueArgs) < trigger.stopThreshold:
+					self.executeTrigger(trigger, caller)
+			# If there is no repeatCount or function threshold, call the trigger once
+			if trigger.continueFunction is None and trigger.repeatCount == 0:
+				self.executeTrigger(trigger, caller)
+		except (Exception) as e:
+			warnings.warn('''%(eType)s raised while executing trigger %(trigger)s from caller %(caller)s: 
+			%(eStr)s
+			Aborting resolution of this trigger.''' %
+				{'eType': type(e),
+				'trigger': str(trigger),
+				'eStr': str(e),
+				'caller': str(caller)})
 
+	def executeTrigger(
+			self, 
+			trigger: Trigger, 
+			caller: 'MapComponent'):
+		"""
+		Execute a given Trigger for objects in layerManager
+		
+		Arguments:
+			layerManager (LayerManager): The LayerManager who's MapComponents we will be resolving the trigger for
+			trigger (Trigger): The trigger to resolve
+			caller (MapComponent): The object that called this trigger to be resolved
+		"""
+		
+		if trigger.calls < trigger.maxCalls:
+			print('Trigger executed: ' + str(trigger) + ', caller: ' + str(caller))
+			for (triggeredFunction, arg) in self.triggers[trigger]:
+				triggeredFunction(caller, arg)
+			trigger.calls += 1
 

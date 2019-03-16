@@ -1,15 +1,13 @@
 from typing import Tuple, List, Optional, Dict
 
 from .utils.coordinate_grid import CartesianPoint
-from .extendable_python.placements.placement_functions import SelectionPropertyManager
-from .extendable_python.properties.property_functions import PropertyFunctionManager
-from .extendable_python.triggers.trigger_functions import TriggerThresholdManager
+from .component_functions import ComponentFunctionManager
 from .layer_classes import LayerManager, Trigger
 import numpy
 import networkx
 import warnings
 
-warnings.simplefilter('always', UserWarning)
+#warnings.simplefilter('always', UserWarning)
 
 # Force warnings.warn() to omit the source code line in the message
 formatwarning_orig = warnings.formatwarning
@@ -45,7 +43,8 @@ class MapComponent:
 			creator: Optional['MapComponent'] = None):
 
 		self.properties = {
-			'creator': creator}
+			'creator': creator,
+			'objectName': objectName}
 		self.objectName = objectName
 		self.jsonObject = jsonObject
 		self.selectionFactors = None
@@ -71,7 +70,7 @@ class MapComponent:
 				funcName = data['PropertyFunction']
 				args = data['Args']
 				try:
-					result = PropertyFunctionManager.propertyFunctions[funcName].determineValue(None, self, args)
+					result = ComponentFunctionManager.componentFunctions[funcName].execute(None, self, args)
 					self.properties[prop] = result
 				except (Exception) as e:
 					warnings.warn('''%(eType)s raised while getting property %(prop)s: 
@@ -112,7 +111,7 @@ class MapComponent:
 			if 'StopThreshold' in trigger: stopThreshold = trigger['StopThreshold']
 			continueFunction = None
 			if 'ContinueFunction' in trigger: 
-				continueFunction = TriggerThresholdManager.triggerThresholds[trigger['ContinueFunction']].testThreshold
+				continueFunction = ComponentFunctionManager.componentFunctions[trigger['ContinueFunction']]().execute
 			continueArgs = None
 			if 'ContinueArgs' in trigger: continueArgs = trigger['ContinueArgs']
 			if trigger['TriggerType'] == 'AfterCreation':
@@ -132,7 +131,6 @@ class MapComponent:
 		"""
 
 		self.loadObject(jsonObject)
-		self.placeObject()
 		# TODO
 		# Add object to helper objects (e.g. bin manager)
 		# Add object to renderer if relevant
@@ -154,16 +152,7 @@ class MapComponent:
 		"""
 
 		for trigger in self.afterCreationTriggers:
-			self.parentLayer.layerManager.triggerManager.resolveTrigger(trigger, self)
-
-	def placeObject(self):
-		"""
-		Determine potential locations for the object and place it, if applicable
-			Each subclass that cares should overload this with their own placement method
-			Note that subclasses that *do* have a location should place themselves on the
-			location lookup table in this function in the future
-		"""
-		pass
+			self.parentLayer.layerManager.triggerManager.resolveTrigger(trigger, self)\
 
 class MapNetwork(MapComponent):
 	"""[summary]
@@ -192,18 +181,21 @@ class MapTerrain(MapComponent):
 	"""[summary]
 	
 	Attributes:
-		heightmap (Dict[Tuple[int, int]: float]): Heightmap for the terrain
+		terrainObject (Dict[Tuple[Number, Number]: Point]): Object for the terrain
+			This object generates, then provides methods to access, the terrain
+			It may use a Cartesian grid and/or a heightmap. It may use neither.
 	"""
 
 	def subclassInit(self):
 		"""
 		Do terrain-specific init stuff
-		For now, that's limited to creating an empty heightmap dict, to be filled by a triggered function later
+		For now, that's limited to creating a nonextant terrainObject property, 
+		to be assigned by a triggered function later
 		While the heightmap could be generated here instead, using a triggered function lets us more flexibly
 		change algorithms and parameters passed to those algorithms
 		"""
 
-		self.heightmap = {}
+		self.terrainObject = None
 
 
 class MapLayer(MapComponent):
@@ -231,10 +223,7 @@ class MapLayer(MapComponent):
 			objectName {[type]} -- [description]
 		"""
 
-		self.layerManager.objects.append(mapObject)
-		if mapObject.objectName not in self.layerManager.objectsByName:
-			self.layerManager.objectsByName[mapObject.objectName] = []
-		self.layerManager.objectsByName[mapObject.objectName].append(mapObject)
+		self.layerManager.addObject(mapObject)
 
 
 	def loadOtherObject(self, caller: MapComponent, objectData: Tuple[str, dict]):
@@ -279,6 +268,7 @@ class MapPoint(MapComponent):
 		"""[summary]
 		"""
 
+		self.location = None
 		self.placeObject()
 
 
@@ -327,17 +317,21 @@ class MapPoint(MapComponent):
 		for selectionFactor, data in self.selectionFactors.items():
 			if data['Origin'] == 'SelectionProperty':
 				factorWeight = 1.0
+				args = {}
 				if 'FactorWeight' in data: factorWeight = data['FactorWeight']
+				if 'Args' in data: args = data['Args']
+				args['location'] = potentialLocation
 				funcName = data['SelectionProperty']
 				try:
-					result = SelectionPropertyManager.selectionProperties[funcName].determineValue(None, self, potentialLocation)
+					result = ComponentFunctionManager.componentFunctions[funcName].execute(None, self, args)
 					value = result * factorWeight
 				except (Exception) as e:
-					warnings.warn('''%(eType)s raised while getting value: 
+					warnings.warn('''%(eType)s raised while getting value of SelectionProperty %(funcName)s: 
 					%(eStr)s
 					Defaulting to value of 0''' %
 						{'eType': type(e),
-						'eStr': str(e)})
+						'eStr': str(e),
+						'funcName': str(funcName)})
 					value = 0
 			else:
 				raise KeyError('Invalid Origin value %(originValue)s for selectionFactor %(selectionFactor)s' % 
@@ -370,7 +364,8 @@ class MapPoint(MapComponent):
 		values = {}
 
 		for potentialLocation in potentialLocations:
-			values[potentialLocation] = self.getValue(potentialLocation)
+			value = self.getValue(potentialLocation)
+			values[potentialLocation] = max(0, value)
 
 		return(values)
 

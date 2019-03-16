@@ -24,6 +24,7 @@ JSON components have two primary fields that they use to manage triggers: Creati
 			StopThreshold {float}: The value ContinueFunction must return before the trigger stops being called
 			ContinueArgs {dict}: Arguments to pass to ContinueFunction
 			MaxCalls {int}: The maximum number of times the trigger may be called before it stops, regardless of ContinueFunction's value
+		TODO: Add a CallOrder field for which order these triggers should be excecuted in
 
 		FunctionTriggers
 			TriggeredFunction {str}: The name of the trigger_functions.TriggeredFunction class to call when the trigger is executed
@@ -33,6 +34,12 @@ JSON components have two primary fields that they use to manage triggers: Creati
 				It's best practice to use a separate trigger to call other OnCalled triggers, for clarity's sake
 					(Though sometimes this will not be best - Especially if ContinueFunction is defined, one might lose efficiency)
 
+RoadTerminus: A node in a RoadNetwork where the network actually connects to something - that thing being the RoadTerminus's creator
+	Strictly speaking, "Terminus" is inaccurate - In many cases, the road will continue in *both* directions
+	But for now the term will suffice
+
+RoadBranchPoints: New RoadTerminus points will connect to the extant RoadNetwork by spawning one of these, if necessary
+	If that one is not close enough, it will repeat the process on creation, thereby looping until it connects
 
 "CreationTrigger": {
 	"TriggerType": "OnCalled",

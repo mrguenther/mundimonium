@@ -1,15 +1,16 @@
 from typing import Tuple, List, Optional, Dict
 
+from ..component_functions import ComponentFunction
 from .utils.coordinate_grid import CartesianPoint
 from .utils.helper_funcs import descendants
 
-class PropertyFunction:
+class PropertyFunction(ComponentFunction):
 	"""
 	Base class for functions that MapComponents will call on load to determine object property values.
 		These are properties that vary by instance of any object, but may be checked by other functions,
 		for example while determining placement
 	
-	Children of this class should implement determineValue (and, optionally, additional helper functions)
+	Children of this class should implement execute (and, optionally, additional helper functions)
 		This is the function that's called by MapComponents for each dynamic property in the object's property list
 
 	Strictly speaking, SelectionProperties could be implemented as PropertyFunctions
@@ -23,7 +24,7 @@ class PropertyFunction:
 		But these types of functions could be moved into universal triggered functions instead
 	"""
 	
-	def determineValue(
+	def execute(
 			self, 
 			caller: 'MapComponent',
 			args: dict) -> any:
@@ -46,7 +47,7 @@ class FindObjectByName(PropertyFunction):
 		Note that the object to be found must have been created before the object calling this
 	"""
 
-	def determineValue(
+	def execute(
 			self, 
 			caller: 'MapComponent',
 			args: Dict[str, any]) -> 'MapComponent':
@@ -76,7 +77,7 @@ class DetermineCreator(PropertyFunction):
 		Otherwise, this returns the object that called the OnCalled trigger
 	"""
 
-	def determineValue(
+	def execute(
 			self,
 			caller: 'MapComponent',
 			args: dict) -> 'MapComponent':
@@ -88,16 +89,3 @@ class DetermineCreator(PropertyFunction):
 		"""
 
 		raise NotImplementedError("This is not an abstract class, it's just not written yet.")
-
-
-class PropertyFunctionManager:
-	"""
-	Class for associating strings (loaded by MapComponents from extension files)
-		with their respective PropertyFunction classes, allowing them to be
-		arbitrarily called without full arbitrary function execution
-
-	Attributes:
-		propertyFunctions (dict[str: function]): The dictionary of PropertyFunction classes, from which determineValue is called
-	"""
-
-	propertyFunctions = {descendant.__name__:descendant for descendant in descendants(PropertyFunction)}
