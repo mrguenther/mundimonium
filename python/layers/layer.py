@@ -15,7 +15,7 @@ class Layer:
 
 	def __init__(
 			self, 
-			parentLayer: Optional[Layer] = None, 
+			parentLayer: Optional['Layer'] = None, 
 			timeController: Optional[temporal.TimeController] = None):
 			
 		self.parentLayer = parentLayer
@@ -31,7 +31,7 @@ class Layer:
 
 	def getTerrainAttributes(
 			self,
-			childLayer: Optional[Layer] = None,
+			childLayer: Optional['Layer'] = None,
 			area: Optional[tuple] = None) -> dict:
 		"""
 		Abstract method: Provides a function for child layers to get info from their parents about terrain attributes and constraints

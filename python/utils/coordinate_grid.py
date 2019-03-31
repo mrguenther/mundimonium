@@ -92,7 +92,7 @@ class CartesianPoint:
 		"""
 
 		if type(point) is tuple: point = CartesianPoint(point)
-		dist = np.sum(np.power(np.subtract(self.coords, point.coords),2))**.5
+		dist = float(np.sum(np.power(np.subtract(self.coords, point.coords),2))**.5)
 		return (dist)
 
 class CartesianGrid(CoordinateGrid):
