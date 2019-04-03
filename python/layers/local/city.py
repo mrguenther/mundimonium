@@ -43,6 +43,15 @@ class RoadNetwork:
 		self.graph = networkx.Graph()
 		self.city = city
 
+	def addPoint(self, location: CartesianPoint):
+		"""[summary]
+		
+		Arguments:
+			location {CartesianPoint} -- [description]
+		"""
+
+		self.graph.add_node(location.coords[:2], location=location)
+
 	def nearestPointInNetwork(self, location: CartesianPoint):
 		"""
 		Find the nearest point in the network as the crow flies
@@ -70,7 +79,7 @@ class RoadNetwork:
 		Arguments:
 			p1 {[type]} -- [description]
 			p2 {[type]} -- [description]
-			maxSlope {[type]} -- [description]
+			dist {[type]} -- [description]
 			args (dict): Static values passed from the layer file for this selection property. Relevant for this class:
 				gradeExp (float): Exponent to which the grade value is raised. Default: 1.5
 				gradeMult (Number): Multiplier for the grade value, before subtraction: Default: 50
@@ -93,7 +102,7 @@ class RoadNetwork:
 	def naiveAStarHeuristic(self, p1: tuple, p2: tuple) -> float:
 		"""
 		Minimal a-star heuristic for pathfinding
-		Just returns distance based off pythagorean
+		Just returns distance based off taxicab
 		TODO: Consider improving this
 		
 		Arguments:
@@ -101,12 +110,28 @@ class RoadNetwork:
 			p2 (tuple): 2-tuple (x,y). The end point to which we are pathfinding
 
 		Returns:
-			float: Distance to the endpoint.
+			float: Distance to the endpoint (taxicab).
 		"""
 
-		dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**.5
+		#dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**.5
+		dist = abs(p1[0]-p2[0]) + abs(p1[1]-p2[1])
 		return(dist)
 
+	def addRoute(self, route: list):
+		"""[summary]
+		
+		Arguments:
+			route {list} -- [description]
+		"""
+
+		prev = None
+		for point in route:
+			loc = self.city.terrainObject.getPoint(point[0],point[1])
+			self.addPoint(loc)
+			if prev is not None:
+				self.graph.add_edge(prev, point)
+				self.city.terrainObject.graph.edges[prev,point]['slopedWeight'] = 0
+			prev = point
 
 	def pathfindToNetwork(self, location: CartesianPoint, gradeMult: Optional[float] = None, gradeExp: Optional[float] = None):
 		"""
@@ -150,7 +175,8 @@ class CityTerrain:
 		print("Generating CityTerrain.heightDict...")
 		self.heightDict = generators.SimplexGenerator2d().generate(self.size)
 		print("Creating CityTerrain.graph...")
-		self.graph = self.createGraph()
+		self.graph = networkx.Graph()
+		self.createGraph()
 		print("Done creating CityTerrain.")
 
 	def createGraph(self):
@@ -166,9 +192,9 @@ class CityTerrain:
 			heightDict {[type]} -- [description] (default: {None})
 		"""
 
-		terrainGraph = networkx.Graph()
+		self.graph = networkx.Graph()
 		for i in self.heightDict: 
-			terrainGraph.add_node(i,z=self.heightDict[i])
+			self.graph.add_node(i,z=self.heightDict[i])
 
 		print("Adding adjacency edges...")
 		for x in range(self.size[0]):
@@ -176,12 +202,10 @@ class CityTerrain:
 				loc = self.getPoint(x,y)
 				if x<self.size[0]-1:
 					dist = loc.distanceTo(self.getPoint(x+1,y))
-					terrainGraph.add_edge((x,y),(x+1,y),dist=dist)
+					self.graph.add_edge((x,y),(x+1,y),dist=dist)
 				if y<self.size[1]-1:
 					dist = loc.distanceTo(self.getPoint(x,y+1))
-					terrainGraph.add_edge((x,y),(x,y+1),dist=dist)
-
-		return(terrainGraph)
+					self.graph.add_edge((x,y),(x,y+1),dist=dist)
 
 	
 	def addSlopedWeights(self, slopeFunc: callable, args: dict, attributeName: str = 'slopedWeight'):
@@ -222,7 +246,7 @@ class CityTerrain:
 		if x < 0: x = 0
 		if y < 0: y = 0
 
-		return(x,y)
+		return((x,y))
 	
 	def getHeight(self, location: CartesianPoint) -> float:
 		"""
@@ -235,11 +259,11 @@ class CityTerrain:
 			(float): Height near that location
 		"""
 
-		return(self.heightDict[self.nearestXY(location)])
+		return(self.graph.nodes[self.nearestXY(location)]['z'])
 
 	def getPoint(self, x: int, y: int) -> CartesianPoint:
 		"""
-		Returns a point on the heightDict as a CartesianPoint
+		Returns a point in the terrain as a CartesianPoint
 		
 		Arguments:
 			x {[type]} -- [description]
@@ -249,7 +273,7 @@ class CityTerrain:
 			CartesianPoint -- [description]
 		"""
 
-		z = self.heightDict[(x,y)]
+		z = self.getHeight(CartesianPoint((x,y,0)))
 		return(CartesianPoint((x,y,z)))
 	
 def tempRender(heightDict, route, size):
@@ -264,5 +288,6 @@ def tempRender(heightDict, route, size):
 			rgb = (0,rgbVal,255-rgbVal)
 			if (x,y) in route: rgb=(255,0,0)
 			display.putpixel((x,y),rgb)
+		print(int(10000.0*x/size[0])/100, '%')
 	display.show()
 
