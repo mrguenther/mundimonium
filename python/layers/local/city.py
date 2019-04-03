@@ -286,8 +286,8 @@ def tempRender(heightDict, route, size):
 			height = heightDict[(x,y)]
 			rgbVal = int(height*127+128)
 			rgb = (0,rgbVal,255-rgbVal)
-			if (x,y) in route: rgb=(255,0,0)
 			display.putpixel((x,y),rgb)
 		print(int(10000.0*x/size[0])/100, '%')
+	for point in route: display.putpixel(point,(255,0,0))
 	display.show()
 
