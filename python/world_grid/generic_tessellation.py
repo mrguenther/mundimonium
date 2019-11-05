@@ -33,13 +33,14 @@ class IsometricPoint(Point):
 		"""
 		self._grid = grid
 		if grid is other.grid:
-			other_b_complement = IsometricDirection.B
-		else:
-			old_border_edge = other.grid.direction_from_face(self.grid)
-			new_border_edge = self.grid.direction_from_face(other.grid)
-			other_b_complement = IsometricDirection(
-					new_border_edge.value - old_border_edge.value)
+			self._b = other.b
+			self._s = other.s
+			return
 		apothem_sum = self.grid.apothem + other.grid.apothem
+		old_border_edge = other.grid.direction_from_face(self.grid)
+		new_border_edge = self.grid.direction_from_face(other.grid)
+		other_b_complement = IsometricDirection(
+				new_border_edge.value - old_border_edge.value)
 		other_s_complement = other_b_complement.rotated_cw_by_index(1)
 		self._b = apothem_sum - other[other_b_complement]
 		self._s = apothem_sum - other[other_s_complement]
