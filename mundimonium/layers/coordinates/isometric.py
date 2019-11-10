@@ -1,5 +1,5 @@
 from mundimonium.layers.coordinates.exceptions import NotAdjacentException
-from typing import Number
+from numbers import Number
 from mundimonium.utils.helper_functions import argc
 
 from enum import Enum
