@@ -11,6 +11,7 @@ pycodestyle = "*"
 numpy = "*"
 networkx = "*"
 pillow = "*"
+noise = "*"
 
 [requires]
 python_version = "3.7"

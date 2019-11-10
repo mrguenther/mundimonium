@@ -7,6 +7,7 @@ from mundimonium.terrain import generators
 from mundimonium.layers.local.objects import buildings
 from mundimonium.utils.coordinate_grid import CartesianPoint
 
+
 class City(Layer):
 	"""
 	TODO
@@ -27,8 +28,9 @@ class City(Layer):
 			terrainAttributes = self.getTerrainAttributes(self.parentLayer)
 		except NotImplementedError:
 			terrainAttributes = None
-		self.terrainObject = CityTerrain(terrainAttributes = terrainAttributes)
+		self.terrainObject = CityTerrain(terrainAttributes=terrainAttributes)
 		self.roadNetwork = RoadNetwork(self)
+
 
 class RoadNetwork:
 	"""
@@ -63,7 +65,7 @@ class RoadNetwork:
 			(node): The nearest node in the network
 		"""
 
-		minDist = self.city.terrainObject.size[0]*self.city.terrainObject.size[1]
+		minDist = self.city.terrainObject.size[0] * self.city.terrainObject.size[1]
 		# If the shortest distance is greater than this something's gone terribly wrong
 		for node, loc in self.graph.nodes.data('location'):
 			dist = location.distanceTo(loc)
@@ -89,13 +91,16 @@ class RoadNetwork:
 				With default arguments, this varies between 1 (flat ground) and 4.5 (20% grade)
 		"""
 
-		assert (abs(p1[0]-p2[0])==1) != (abs(p1[1]-p2[1])==1) # The horizontal distance between points should always be 1
-		grade = (dist**2-1)**0.5 # Which simplifies calculating the grade, somewhat (note that grade = rise/run = rise/1)
+		# The horizontal distance between points should always be 1
+		assert (abs(p1[0] - p2[0]) == 1) != (abs(p1[1] - p2[1]) == 1)
+		grade = (dist ** 2 - 1) ** 0.5  # Which simplifies calculating the grade, somewhat (note that grade = rise/run = rise/1)
 
 		gradeMult = 50
-		if 'gradeMult' in args: gradeMult = args['gradeMult']
+		if 'gradeMult' in args:
+			gradeMult = args['gradeMult']
 		gradeExp = 1.5
-		if 'gradeExp' in args: gradeExp = args['gradeExp']
+		if 'gradeExp' in args:
+			gradeExp = args['gradeExp']
 		slopedVal = 1 + gradeMult * grade**gradeExp
 		return(slopedVal)
 
@@ -106,15 +111,15 @@ class RoadNetwork:
 		TODO: Consider improving this
 
 		Arguments:
-			p1 (tuple): 2-tuple (x,y). The point at which to check the heuristic
-			p2 (tuple): 2-tuple (x,y). The end point to which we are pathfinding
+			p1 (tuple): 2-tuple (x, y). The point at which to check the heuristic
+			p2 (tuple): 2-tuple (x, y). The end point to which we are pathfinding
 
 		Returns:
 			float: Distance to the endpoint (taxicab).
 		"""
 
-		#dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**.5
-		dist = abs(p1[0]-p2[0]) + abs(p1[1]-p2[1])
+		# dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**.5
+		dist = abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
 		return(dist)
 
 	def addRoute(self, route: list):
@@ -126,11 +131,11 @@ class RoadNetwork:
 
 		prev = None
 		for point in route:
-			loc = self.city.terrainObject.getPoint(point[0],point[1])
+			loc = self.city.terrainObject.getPoint(point[0], point[1])
 			self.addPoint(loc)
 			if prev is not None:
 				self.graph.add_edge(prev, point)
-				self.city.terrainObject.graph.edges[prev,point]['slopedWeight'] = 0
+				self.city.terrainObject.graph.edges[prev, point]['slopedWeight'] = 0
 			prev = point
 
 	def pathfindToNetwork(self, location: CartesianPoint, gradeMult: Optional[float] = None, gradeExp: Optional[float] = None):
@@ -147,10 +152,12 @@ class RoadNetwork:
 		# Consider: Make slopedWeight = 0 wherever the RoadNetwork already exists
 
 		slopeArgs = {}
-		if gradeMult is not None: slopeArgs['gradeMult'] = gradeMult
-		if gradeExp is not None: slopeArgs['gradeExp'] = gradeExp
+		if gradeMult is not None:
+			slopeArgs['gradeMult'] = gradeMult
+		if gradeExp is not None:
+			slopeArgs['gradeExp'] = gradeExp
 
-		if 'slopedWeight' not in self.city.terrainObject.graph.edges[(1,1),(1,2)]:
+		if 'slopedWeight' not in self.city.terrainObject.graph.edges[(1, 1), (1, 2)]:
 			print('slopedWeight not yet calculated for this city.terrainObject.')
 			self.city.terrainObject.addSlopedWeights(self.getSlopedVal, slopeArgs, attributeName='slopedWeight')
 
@@ -158,6 +165,7 @@ class RoadNetwork:
 		x, y = self.city.terrainObject.nearestXY(location)
 		route = astar(self.city.terrainObject.graph, (x, y), nearestNode, heuristic=self.naiveAStarHeuristic, weight='slopedWeight')
 		return(route)
+
 
 class CityTerrain:
 	"""[summary]
@@ -168,9 +176,11 @@ class CityTerrain:
 			terrainAttributes: Optional[dict] = None):
 
 		# TODO: Support more terrainAttributes
-		if terrainAttributes is None: terrainAttributes = {}
+		if terrainAttributes is None:
+			terrainAttributes = {}
 		self.terrainAttributes = terrainAttributes
-		if 'size' not in self.terrainAttributes: self.terrainAttributes['size'] = (1024,1024)
+		if 'size' not in self.terrainAttributes:
+			self.terrainAttributes['size'] = (1024, 1024)
 		self.size = self.terrainAttributes['size']
 		print("Generating CityTerrain.heightDict...")
 		self.heightDict = generators.SimplexGenerator2d().generate(self.size)
@@ -194,19 +204,18 @@ class CityTerrain:
 
 		self.graph = networkx.Graph()
 		for i in self.heightDict:
-			self.graph.add_node(i,z=self.heightDict[i])
+			self.graph.add_node(i, z=self.heightDict[i])
 
 		print("Adding adjacency edges...")
 		for x in range(self.size[0]):
 			for y in range(self.size[1]):
-				loc = self.getPoint(x,y)
-				if x<self.size[0]-1:
-					dist = loc.distanceTo(self.getPoint(x+1,y))
-					self.graph.add_edge((x,y),(x+1,y),dist=dist)
-				if y<self.size[1]-1:
-					dist = loc.distanceTo(self.getPoint(x,y+1))
-					self.graph.add_edge((x,y),(x,y+1),dist=dist)
-
+				loc = self.getPoint(x, y)
+				if x < self.size[0] - 1:
+					dist = loc.distanceTo(self.getPoint(x + 1, y))
+					self.graph.add_edge((x, y), (x + 1, y), dist=dist)
+				if y < self.size[1] - 1:
+					dist = loc.distanceTo(self.getPoint(x, y + 1))
+					self.graph.add_edge((x, y), (x, y + 1), dist=dist)
 
 	def addSlopedWeights(self, slopeFunc: callable, args: dict, attributeName: str = 'slopedWeight'):
 		"""
@@ -226,7 +235,6 @@ class CityTerrain:
 		for p1, p2, dist in self.graph.edges.data('dist'):
 			self.graph.edges[p1, p2][attributeName] = slopeFunc(p1, p2, dist, args)
 
-
 	def nearestXY(self, location: CartesianPoint) -> tuple:
 		"""
 		Returns the nearest valid (x, y) tuple for accessing the heighmap
@@ -239,14 +247,18 @@ class CityTerrain:
 		"""
 
 		x, y = location.coords[:2]
-		x = int(x+.5)
-		y = int(y+.5)
-		if x >= self.size[0]: x = self.size[0]-1
-		if y >= self.size[1]: y = self.size[1]-1
-		if x < 0: x = 0
-		if y < 0: y = 0
+		x = int(x + .5)
+		y = int(y + .5)
+		if x >= self.size[0]:
+			x = self.size[0] - 1
+		if y >= self.size[1]:
+			y = self.size[1] - 1
+		if x < 0:
+			x = 0
+		if y < 0:
+			y = 0
 
-		return((x,y))
+		return((x, y))
 
 	def getHeight(self, location: CartesianPoint) -> float:
 		"""
@@ -273,21 +285,23 @@ class CityTerrain:
 			CartesianPoint -- [description]
 		"""
 
-		z = self.getHeight(CartesianPoint((x,y,0)))
-		return(CartesianPoint((x,y,z)))
+		z = self.getHeight(CartesianPoint((x, y, 0)))
+		return(CartesianPoint((x, y, z)))
+
 
 def tempRender(heightDict, route, size):
 	from PIL import Image
 	display = Image.new('RGB', size)
 	print('Readying image...')
 	# Print a pretty picture
-	for x in range(0,size[0]):
-		for y in range(0,size[1]):
-			height = heightDict[(x,y)]
-			rgbVal = int(height*127+128)
-			rgb = (0,rgbVal,255-rgbVal)
-			display.putpixel((x,y),rgb)
-		print(int(10000.0*x/size[0])/100, '%')
-	for point in route: display.putpixel(point,(255,0,0))
+	for x in range(0, size[0]):
+		for y in range(0, size[1]):
+			height = heightDict[(x, y)]
+			rgbVal = int(height * 127 + 128)
+			rgb = (0, rgbVal, 255 - rgbVal)
+			display.putpixel((x, y), rgb)
+		print(int(10000.0 * x / size[0]) / 100, '%')
+	for point in route:
+		display.putpixel(point, (255, 0, 0))
 	display.show()
 
