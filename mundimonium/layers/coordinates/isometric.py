@@ -1,6 +1,7 @@
 from exceptions import NotAdjacentException
+from hash_by_index import HashByIndex
 from type_names import Number
-from mundimonium.utils.helper_funcs import argc
+from mundimonium.utils.helper_functions import argc
 
 from enum import Enum
 from typing import Optional
@@ -34,7 +35,7 @@ class IsometricGrid:
 		raise NotImplementedError()
 
 
-class IsometricPoint:
+class IsometricPoint(HashByIndex):
 	def __init__(
 			self,
 			grid: IsometricGrid,

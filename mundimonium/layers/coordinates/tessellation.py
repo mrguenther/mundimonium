@@ -1,14 +1,16 @@
 from exceptions import NotAdjacentException
+from hash_by_index import HashByIndex
 from isometric import IsometricGrid
+from type_names import Number
 
+import itertools
 import math
-from typing import Optional
+from typing import Optional, List
 
 
 class Tessellation:
 	def __init__(self):
-		self._vertex_graph = self._generate_vertex_graph()
-		self._face_graph = self._generate_face_graph()
+		self._vertex_graph = dict()
 
 	@property
 	def vertex_type(self):
@@ -18,28 +20,30 @@ class Tessellation:
 	def face_type(self):
 		raise NotImplementedError()
 
-	def _generate_vertex_graph(self):
+	def _generate_tessellation(self):
 		raise NotImplementedError()
 
-	def _generate_face_graph(self):
-		raise NotImplementedError()
+	def add_vertex(
+			self,
+			new_vertex: "TessellationVertex",
+			adjacent_vertices: List["TessellationVertex"] = list()):
+		self._vertex_graph[new_vertex] = adjacent_vertices
+		for vertex in adjacent_vertices:
+			self._vertex_graph[vertex].append(new_vertex)
+
+	def add_face(self, bounding_vertices: List["TessellationFace"]):
+		assert len(bounding_vertices) == 3, (
+				"A face must be bounded by exactly three vertices.")
+		new_face = self.face_type(*bounding_vertices)
 
 
-class TessellationVertex:
-	def __init__(self, projection_coordinates, adjacent_vertices,
-				suppress_faces_between=list()):
-		# TODO: handle suppression of unwanted faces when intentionally creating holes to be extended later with more polygons.
+class TessellationVertex(HashByIndex):
+	def __init__(self, projection_coordinates):
 		self._projection_coordinates = projection_coordinates
-		self._adjacent_vertices = adjacent_vertices
+		# TODO: remove all remaining uses of self._adjacent_vertices
 		self._adjacent_faces = list()
-		self._add_reciprocal_edges_to_neighbors()
-		self._create_adjacent_faces()
 
-	def _add_reciprocal_edges_to_neighbors(self):
-		for v in self._adjacent_vertices:
-			v._add_adjacent_vertex(self)
-
-	def _create_adjacent_faces(self):
+	def add_adjacent_faces(self):
 		num_neighbors = len(self._adjacent_vertices)
 		for i in range(num_neighbors):
 			neighbor_i = self._adjacent_vertices[i]
@@ -101,7 +105,7 @@ class TessellationVertex:
 		return self._adjacent_faces
 
 
-class TessellationFace(IsometricGrid):
+class TessellationFace(HashByIndex, IsometricGrid):
 	BASE_TO_ALTITUDE = math.sqrt(3) / 2
 	APOTHEM_TO_ALTITUDE = 3
 	BASE_TO_APOTHEM = BASE_TO_ALTITUDE / APOTHEM_TO_ALTITUDE
