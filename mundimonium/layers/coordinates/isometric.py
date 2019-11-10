@@ -1,6 +1,6 @@
-from exceptions import NotAdjacentException
-from type_names import Number
-from mundimonium.utils.helper_funcs import argc
+from mundimonium.layers.coordinates.exceptions import NotAdjacentException
+from typing import Number
+from mundimonium.utils.helper_functions import argc
 
 from enum import Enum
 from typing import Optional

@@ -1,5 +1,5 @@
-from exceptions import NotAdjacentException
-from isometric import IsometricGrid
+from mundimonium.layers.coordinates.exceptions import NotAdjacentException
+from mundimonium.layers.coordinates.isometric import IsometricGrid, IsometricDirection
 
 import math
 from typing import Optional
