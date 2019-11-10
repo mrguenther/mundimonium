@@ -1,7 +1,9 @@
 
-class Neighborhood: # Might rename to Ward
+
+class Neighborhood:  # Might rename to Ward
 	"""
 	TODO
 	"""
 	def __init__(self):
 		# TODO
+		pass

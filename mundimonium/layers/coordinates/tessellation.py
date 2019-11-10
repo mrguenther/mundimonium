@@ -1,7 +1,8 @@
-from exceptions import NotAdjacentException
-from hash_by_index import HashByIndex
-from isometric import IsometricGrid
-from type_names import Number
+from mundimonium.layers.coordinates.exceptions import NotAdjacentException
+from mundimonium.layers.coordinates.hash_by_index import HashByIndex
+from mundimonium.layers.coordinates.isometric \
+		import IsometricGrid, IsometricDirection
+from mundimonium.layers.coordinates.type_names import Number
 
 import itertools
 import math

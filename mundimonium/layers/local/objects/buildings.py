@@ -1,4 +1,5 @@
 
+
 class Building:
 	"""
 	TODO

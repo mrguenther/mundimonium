@@ -1,6 +1,6 @@
-from exceptions import NotAdjacentException
-from hash_by_index import HashByIndex
-from type_names import Number
+from mundimonium.layers.coordinates.exceptions import NotAdjacentException
+from mundimonium.layers.coordinates.hash_by_index import HashByIndex
+from mundimonium.layers.coordinates.type_names import Number
 from mundimonium.utils.helper_functions import argc
 
 from enum import Enum

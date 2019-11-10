@@ -1,6 +1,7 @@
 from typing import Optional
 from mundimonium.controllers import temporal
 
+
 class Layer:
 	"""
 	Base class for layers
