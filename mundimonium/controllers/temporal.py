@@ -2,7 +2,7 @@ class TimeController:
 	"""
 	Object for managing the passage of time.
 	Something something Dr Who joke something.
-	This will function similarly to a game loop, 
+	This will function similarly to a game loop,
 		in that it stops object motion and whatnot from being tied only to tick rate
 	Layer objects will somehow connect with this, and, as it ticks forward, simulate ongoing occurrences
 		For highly-variable layers like cities, we'll need to do something to prevent them from slowing simulation to a crawl

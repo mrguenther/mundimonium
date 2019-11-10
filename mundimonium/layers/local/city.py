@@ -2,10 +2,10 @@ from typing import Optional
 import networkx
 from networkx.algorithms.shortest_paths.astar import astar_path as astar
 
-from ..layer import *
-from ...terrain import generators
-from .objects import buildings
-from ...utils.coordinate_grid import CartesianPoint
+from mundimonium.layers.layer import *
+from mundimonium.terrain import generators
+from mundimonium.layers.local.objects import buildings
+from mundimonium.utils.coordinate_grid import CartesianPoint
 
 class City(Layer):
 	"""
@@ -13,11 +13,11 @@ class City(Layer):
 	"""
 
 	def __init__(
-			self, 
-			parentLayer: Optional[Layer] = None, 
+			self,
+			parentLayer: Optional[Layer] = None,
 			timeController: Optional[temporal.TimeController] = None):
 		"""[summary]
-		
+
 		Arguments:
 			parentLayer {[type]} -- [description]
 		"""
@@ -45,7 +45,7 @@ class RoadNetwork:
 
 	def addPoint(self, location: CartesianPoint):
 		"""[summary]
-		
+
 		Arguments:
 			location {CartesianPoint} -- [description]
 		"""
@@ -55,7 +55,7 @@ class RoadNetwork:
 	def nearestPointInNetwork(self, location: CartesianPoint):
 		"""
 		Find the nearest point in the network as the crow flies
-		
+
 		Arguments:
 			location (CartesianPoint): Location from which to find the nearest point
 
@@ -63,19 +63,19 @@ class RoadNetwork:
 			(node): The nearest node in the network
 		"""
 
-		minDist = self.city.terrainObject.size[0]*self.city.terrainObject.size[1] 
+		minDist = self.city.terrainObject.size[0]*self.city.terrainObject.size[1]
 		# If the shortest distance is greater than this something's gone terribly wrong
 		for node, loc in self.graph.nodes.data('location'):
 			dist = location.distanceTo(loc)
-			if dist < minDist: 
+			if dist < minDist:
 				minDist = dist
 				minDistNode = node
 		return (minDistNode)
 
 	def getSlopedVal(self, p1: tuple, p2: tuple, dist: float, args: dict):
 		"""[summary]
-		
-		
+
+
 		Arguments:
 			p1 {[type]} -- [description]
 			p2 {[type]} -- [description]
@@ -104,7 +104,7 @@ class RoadNetwork:
 		Minimal a-star heuristic for pathfinding
 		Just returns distance based off taxicab
 		TODO: Consider improving this
-		
+
 		Arguments:
 			p1 (tuple): 2-tuple (x,y). The point at which to check the heuristic
 			p2 (tuple): 2-tuple (x,y). The end point to which we are pathfinding
@@ -119,7 +119,7 @@ class RoadNetwork:
 
 	def addRoute(self, route: list):
 		"""[summary]
-		
+
 		Arguments:
 			route {list} -- [description]
 		"""
@@ -137,7 +137,7 @@ class RoadNetwork:
 		"""
 		Find the route to the nearest point in the network without exceeding maxSlope in slope
 		Note that this might not always be the shortest route to the network in general
-		
+
 		Arguments:
 			location (CartesianPoint): Location from which to pathfind
 			maxSlope (float): The maximum slope allowed on the path, given as rise:run ratio.
@@ -187,13 +187,13 @@ class CityTerrain:
 		Edges have the following attributes:
 			dist: Distance between points - As such, they also indicate the slope of the terrain
 				For example, a 45-degree angle would result in sqrt(2) weight
-		
+
 		Keyword Arguments:
 			heightDict {[type]} -- [description] (default: {None})
 		"""
 
 		self.graph = networkx.Graph()
-		for i in self.heightDict: 
+		for i in self.heightDict:
 			self.graph.add_node(i,z=self.heightDict[i])
 
 		print("Adding adjacency edges...")
@@ -207,16 +207,16 @@ class CityTerrain:
 					dist = loc.distanceTo(self.getPoint(x,y+1))
 					self.graph.add_edge((x,y),(x,y+1),dist=dist)
 
-	
+
 	def addSlopedWeights(self, slopeFunc: callable, args: dict, attributeName: str = 'slopedWeight'):
 		"""
 		Add an attribute for slope weights to the graph
 		These will usually be used for pathfinding later - so "invalid" slopes should probably have very high values
-		
+
 		Arguments:
 			slopeFunc {callable} -- [description]
 			args {dict} -- [description]
-		
+
 		Keyword Arguments:
 			attributeName {str} -- [description] (default: {'slopedWeight'})
 		"""
@@ -230,7 +230,7 @@ class CityTerrain:
 	def nearestXY(self, location: CartesianPoint) -> tuple:
 		"""
 		Returns the nearest valid (x, y) tuple for accessing the heighmap
-		
+
 		Arguments:
 			location (CartesianPoint): Location for which to find the nearest (x, y)
 
@@ -247,14 +247,14 @@ class CityTerrain:
 		if y < 0: y = 0
 
 		return((x,y))
-	
+
 	def getHeight(self, location: CartesianPoint) -> float:
 		"""
 		Returns the height of the nearest point on the map to the location
-		
+
 		Arguments:
 			location (CartesianPoint): Location to get the height near
-		
+
 		Returns:
 			(float): Height near that location
 		"""
@@ -264,18 +264,18 @@ class CityTerrain:
 	def getPoint(self, x: int, y: int) -> CartesianPoint:
 		"""
 		Returns a point in the terrain as a CartesianPoint
-		
+
 		Arguments:
 			x {[type]} -- [description]
 			y {[type]} -- [description]
-		
+
 		Returns:
 			CartesianPoint -- [description]
 		"""
 
 		z = self.getHeight(CartesianPoint((x,y,0)))
 		return(CartesianPoint((x,y,z)))
-	
+
 def tempRender(heightDict, route, size):
 	from PIL import Image
 	display = Image.new('RGB', size)

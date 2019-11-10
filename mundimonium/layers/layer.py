@@ -1,5 +1,5 @@
 from typing import Optional
-from ..controllers import temporal
+from mundimonium.controllers import temporal
 
 class Layer:
 	"""
@@ -14,10 +14,10 @@ class Layer:
 	"""
 
 	def __init__(
-			self, 
-			parentLayer: Optional['Layer'] = None, 
+			self,
+			parentLayer: Optional['Layer'] = None,
 			timeController: Optional[temporal.TimeController] = None):
-			
+
 		self.parentLayer = parentLayer
 		self.timeController = timeController
 		self.children = []
@@ -39,7 +39,7 @@ class Layer:
 
 		Raises:
 			NotImplementedError
-		
+
 		Keyword Arguments:
 			childLayer {Optional[Layer]} -- [description] (default: {None})
 			area {Optional[tuple]} -- [description] (default: {None})

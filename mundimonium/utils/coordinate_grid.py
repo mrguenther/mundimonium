@@ -1,6 +1,6 @@
 from typing import Tuple, Union
 
-from .distance_unit import DistanceUnit
+from mundimonium.utils.distance_unit import DistanceUnit
 from numbers import Number
 import numpy as np
 from enum import Enum, auto
@@ -47,12 +47,12 @@ class CartesianPoint:
 		Arguments:
 			location (Tuple[Number, Number, Number]): Point creation location (x,y,z)
 		"""
-		
-		if (not isinstance(location, tuple) or 
-				not all(isinstance(i, Number) for i in location) or 
+
+		if (not isinstance(location, tuple) or
+				not all(isinstance(i, Number) for i in location) or
 				not len(location) == 3):
 			raise TypeError("location must be Tuple[Number, Number, Number]")
-			
+
 		self.coords = location
 
 	def __hash__(self):
@@ -83,10 +83,10 @@ class CartesianPoint:
 	def distanceTo(self, point: Union['CartesianPoint', tuple]) -> float:
 		"""
 		Determine the distance to a point
-		
+
 		Arguments:
 			point {CartesianPoint, tuple}
-		
+
 		Returns:
 			distance {float}
 		"""
@@ -107,7 +107,7 @@ class CartesianGrid(CoordinateGrid):
 		"""
 		Calculates the distance between two points in the grid, given as coordinate-pair tuples.
 		"""
-		
+
 		pass
 
 
