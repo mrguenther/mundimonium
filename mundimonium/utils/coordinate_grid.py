@@ -32,12 +32,13 @@ class CoordinateGrid:
 		"""
 		raise NotImplementedError("Requires a coordinate system.")
 
+
 class CartesianPoint:
 	"""
 	A point in a 3d CartesianGrid
 
 	Attributes:
-		coords (Tuple[Number, Number, Number]): (x,y,z)
+		coords (Tuple[Number, Number, Number]): (x, y, z)
 	"""
 
 	def __init__(self, location: Tuple[Number, Number, Number]):
@@ -45,7 +46,7 @@ class CartesianPoint:
 		Create the point at a location
 
 		Arguments:
-			location (Tuple[Number, Number, Number]): Point creation location (x,y,z)
+			location (Tuple[Number, Number, Number]): Point creation location (x, y, z)
 		"""
 
 		if (not isinstance(location, tuple) or
@@ -68,8 +69,10 @@ class CartesianPoint:
 		Note that tuples are compared against CartesianPoint.coords for equivalency
 		"""
 
-		if type(self) == type(other): return(self.__hash__() == other.__hash__())
-		if type(other) == tuple: return(self.coords == other)
+		if type(self) == type(other):
+			return(self.__hash__() == other.__hash__())
+		if type(other) == tuple:
+			return(self.coords == other)
 		return(False)
 
 	def __repr__(self) -> str:
@@ -91,9 +94,11 @@ class CartesianPoint:
 			distance {float}
 		"""
 
-		if type(point) is tuple: point = CartesianPoint(point)
-		dist = float(np.sum(np.power(np.subtract(self.coords, point.coords),2))**.5)
+		if type(point) is tuple:
+			point = CartesianPoint(point)
+		dist = float(np.sum(np.power(np.subtract(self.coords, point.coords), 2)) ** .5)
 		return (dist)
+
 
 class CartesianGrid(CoordinateGrid):
 	"""
@@ -120,7 +125,7 @@ class SphericalGrid(CoordinateGrid):
 
 	def __init__(self, sphereRadius):
 		self.coordinateSpace = CoordinateSpace.SPHERICAL
-		self.sphereRadius = sphereRadius # Radius in self.distanceUnit
+		self.sphereRadius = sphereRadius  # Radius in self.distanceUnit
 
 	def distance(self, pt1, pt2):
 		"""
