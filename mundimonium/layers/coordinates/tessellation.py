@@ -2,10 +2,10 @@ from mundimonium.layers.coordinates.exceptions import NotAdjacentException
 from mundimonium.layers.coordinates.hash_by_index import HashByIndex
 from mundimonium.layers.coordinates.isometric \
 		import IsometricGrid, IsometricDirection
-from mundimonium.layers.coordinates.type_names import Number
 
 import itertools
 import math
+from numbers import Number
 from typing import Optional, List
 
 
@@ -14,20 +14,21 @@ class Tessellation:
 		self._vertex_graph = dict()
 
 	@property
-	def vertex_type(self):
+	def vertex_type(self) -> type:
 		raise NotImplementedError()
 
 	@property
-	def face_type(self):
+	def face_type(self) -> type:
 		raise NotImplementedError()
 
-	def _generate_tessellation(self):
+	def _generate_tessellation(self) -> None:
 		raise NotImplementedError()
 
 	def add_vertex(
 			self,
 			new_vertex: "TessellationVertex",
-			adjacent_vertices: List["TessellationVertex"] = list()):
+			adjacent_vertices: List["TessellationVertex"] = list()
+	) -> None:
 		self._vertex_graph[new_vertex] = adjacent_vertices
 		for vertex in adjacent_vertices:
 			self._vertex_graph[vertex].append(new_vertex)
@@ -39,7 +40,7 @@ class Tessellation:
 
 
 class TessellationVertex(HashByIndex):
-	def __init__(self, projection_coordinates):
+	def __init__(self, projection_coordinates: List[Number]):
 		self._projection_coordinates = projection_coordinates
 		# TODO: remove all remaining uses of self._adjacent_vertices
 		self._adjacent_faces = list()
