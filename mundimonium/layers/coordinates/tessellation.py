@@ -1,7 +1,7 @@
 from mundimonium.layers.coordinates.exceptions import NotAdjacentException
 from mundimonium.layers.coordinates.hash_by_index import HashByIndex
-from mundimonium.layers.coordinates.isometric \
-		import IsometricGrid, IsometricDirection
+from mundimonium.layers.coordinates.isometric import \
+		IsometricDirection, IsometricGrid, IsometricPoint, IsometricVector
 
 import itertools
 import math
@@ -42,31 +42,20 @@ class Tessellation:
 class TessellationVertex(HashByIndex):
 	def __init__(self, projection_coordinates: List[Number]):
 		self._projection_coordinates = projection_coordinates
-		# TODO: remove all remaining uses of self._adjacent_vertices
 		self._adjacent_faces = list()
 
-	def add_adjacent_faces(self):
-		num_neighbors = len(self._adjacent_vertices)
-		for i in range(num_neighbors):
-			neighbor_i = self._adjacent_vertices[i]
-			for j in range(i + 1, num_neighbors):
-				neighbor_j = self._adjacent_vertices[j]
-				if neighbor_i.is_adjacent_to(neighbor_j):
-					new_face = self.face_type(self, neighbor_i, neighbor_j)  # TODO: make sure I order these so the normal vector isn't inverted.
-					self._add_adjacent_face(new_face)
-					neighbor_i._add_adjacent_face(new_face)
-					neighbor_j._add_adjacent_face(new_face)
-
-	def _add_adjacent_vertex(self, vertex):
-		if vertex not in self._adjacent_vertices:
-			self._adjacent_vertices.append(vertex)
-
-	def _add_adjacent_face(self, face):
+	def add_adjacent_face(self, face):
 		if face not in self._adjacent_faces:
 			self._adjacent_faces.append(face)
 
+	def is_adjacent_to(self, face):
+		return face in self._adjacent_faces
+
 	def is_adjacent_to(self, vertex):
-		return vertex in self._adjacent_vertices
+		for face in self._adjacent_faces:
+			if face.is_adjacent_to(vertex):
+				return vertex is not self
+		return False
 
 	@property
 	def tessellation_type(self):
@@ -91,17 +80,20 @@ class TessellationVertex(HashByIndex):
 	@x.setter
 	def x(self, new_x):
 		self._projection_coordinates[0] = new_x
+		for face in self._adjacent_faces:
+			face.recalculate_centroid()
 
 	@y.setter
 	def y(self, new_y):
 		self._projection_coordinates[1] = new_y
+		for face in self._adjacent_faces:
+			face.recalculate_centroid()
 
 	@z.setter
 	def z(self, new_z):
 		self._projection_coordinates[2] = new_z
-
-	def adjacent_vertices(self):
-		return self._adjacent_vertices
+		for face in self._adjacent_faces:
+			face.recalculate_centroid()
 
 	def adjacent_faces(self):
 		return self._adjacent_faces
@@ -115,13 +107,17 @@ class TessellationFace(HashByIndex, IsometricGrid):
 	def __init__(self, vertex_b, vertex_s, vertex_d):
 		self._adjacent_faces = [None] * len(IsometricDirection)
 		self._adjacent_vertices = [vertex_b, vertex_s, vertex_d]
-		self._coordinates = [
-			self.calculate_external_x(),
-			self.calculate_external_y(),
-			self.calculate_external_z()]
-		self._side_length = None  # TODO
+
+		for vertex in self._adjacent_vertices:
+			vertex.add_adjacent_face(self)
+
+		self._side_length = 1  # TODO: Set this to a global scale value times
+		#                              a local scale-distortion modifier.
 		self._apothem = self._side_length * TessellationFace.BASE_TO_APOTHEM
 		self._altitude = self._side_length * TessellationFace.BASE_TO_ALTITUDE
+
+		self._centroid = None
+		self.recalculate_centroid()
 
 	def vertex_at(self, opposite_edge):
 		return self._adjacent_vertices[opposite_edge.value]
@@ -143,6 +139,11 @@ class TessellationFace(HashByIndex, IsometricGrid):
 		except ValueError:
 			raise NotAdjacentException("The provided faces are not adjacent.")
 
+	def recalculate_centroid(self):
+		self._centroid = tuple(
+			sum([getattr(vert, axis) for vert in self._adjacent_vertices]) /
+			len(self._adjacent_vertices) for axis in "xyz")
+
 	@property
 	def side_length(self):
 		return self._side_length
@@ -156,9 +157,34 @@ class TessellationFace(HashByIndex, IsometricGrid):
 		return self._altitude
 
 	@property
+	def centroid(self):
+		return self._centroid
+
+	@property
 	def tessellation_type(self):
 		raise NotImplementedError()
 
 	@property
 	def vertex_type(self):
 		raise NotImplementedError()
+
+
+if __name__ == '__main__':
+	apothem = math.sqrt(3)/6
+	vert_b = TessellationVertex([0, 2*apothem, 0])
+	vert_s = TessellationVertex([-1/2, -apothem, 0])
+	vert_d = TessellationVertex([1/2, -apothem, 0])
+	grid = TessellationFace(vert_b, vert_s, vert_d)
+	print("Centroid:", grid.centroid)
+	a = IsometricPoint.center(grid)
+	b = IsometricPoint(grid, apothem + 0.2, apothem + 0.2)
+	c = IsometricPoint(grid, apothem + 0.2, apothem - 0.2)
+	print("a:", a)
+	print("b:", b)
+	print("c:", b)
+	print(f"(a - b): |{a - b}| = {(a - b).length} = {a.distance_from(b)}")
+	print(f"(b - a): |{b - a}| = {(b - a).length} = {b.distance_from(a)}")
+	print(f"(a - c): |{a - c}| = {(a - c).length} = {a.distance_from(c)}")
+	print(f"(c - a): |{c - a}| = {(c - a).length} = {c.distance_from(a)}")
+	print(f"(c - b): |{c - b}| = {(c - b).length} = {c.distance_from(b)}")
+	print(f"(b - c): |{b - c}| = {(b - c).length} = {b.distance_from(c)}")

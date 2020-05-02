@@ -3,8 +3,20 @@ from mundimonium.layers.coordinates.hash_by_index import HashByIndex
 from mundimonium.utils.helper_functions import argc
 
 from enum import Enum
+from math import sqrt
 from numbers import Number
 from typing import Optional
+
+
+def isometric_distance(delta_axis_1, delta_axis_2):
+	"""
+	Finds a distance on the isometric grid given deltas in two isometric axes.
+
+	By the law of cosines, this is sqrt(a**2 + b**2 - 2*a*b*cos(angle C)). The
+	angle in question is always 60 degrees, making 2*cos(angle C) equal to 1.
+	This leaves sqrt(a**2 + b**2 - 2*a*b).
+	"""
+	return sqrt(delta_axis_1**2 + delta_axis_2**2 - delta_axis_1 * delta_axis_2)
 
 
 class IsometricDirection(Enum):
@@ -83,6 +95,11 @@ class IsometricPoint(HashByIndex):
 				apothem_sum - self[local_complement_of_new_s])
 		projected_point[new_border_edge] -= apothem_sum
 		return projected_point
+
+	def distance_from(self, other) -> Number:
+		assert self.grid is other.grid, \
+				"distance_from() must take two points on the same grid."
+		return isometric_distance(other.b - self.b, other.s - self.s)
 
 	def __repr__(self) -> str:
 		return f"<id {hash(self)}: {str(self)} in grid {repr(self.grid)}>"
@@ -210,8 +227,12 @@ class IsometricVector:
 		assert argc(delta_b, delta_s, delta_d) == 2, \
 				"from_components() must be provided exactly two arguments."
 		return IsometricVector(
-				-(delta_s + delta_d) if delta_b is None else delta_b,
-				-(delta_b + delta_d) if delta_s is None else delta_s)
+				delta_b if delta_b is not None else -0.5 * (delta_s + delta_d),
+				delta_s if delta_s is not None else -0.5 * (delta_b + delta_d))
+
+	def unit_vector(self) -> "IsometricVector":
+		length = self.length
+		return IsometricVector(self.delta_b / length, self.delta_s / length)
 
 	@property
 	def delta_b(self) -> Number:
@@ -224,6 +245,32 @@ class IsometricVector:
 	@property
 	def delta_d(self) -> Number:
 		return -(self._delta_b + self._delta_s)
+
+	@delta_b.setter
+	def delta_b(self, delta_b: Number) -> None:
+		self._delta_s -= 0.5 * (delta_b - self._delta_b)
+		self._delta_b = delta_b
+
+	@delta_s.setter
+	def delta_s(self, delta_s: Number) -> None:
+		self._delta_b -= 0.5 * (delta_s - self._delta_s)
+		self._delta_s = delta_s
+
+	@delta_d.setter
+	def delta_d(self, delta_d: Number) -> None:
+		delta_delta = 0.5 * (delta_d - self.delta_d)
+		self._delta_b -= delta_delta
+		self._delta_s -= delta_delta
+
+	@property
+	def length(self) -> Number:
+		return isometric_distance(self.delta_b, self.delta_s)
+
+	@length.setter
+	def length(self, length) -> None:
+		scale_factor = length / self.length
+		self.delta_b *= scale_factor
+		self.delta_s *= scale_factor
 
 	def __repr__(self) -> str:
 		return f"<{self.delta_b}, {self.delta_s}, {self.delta_d}>"

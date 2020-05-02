@@ -20,7 +20,7 @@ class HashByIndex:
 		cls._hash_index = hash_count & cls._MAX_INDEX
 
 	def __new__(cls, *args, **kwargs):
-		instance = super().__new__(cls, *args, **kwargs)
+		instance = super().__new__(cls)
 		instance._hash = HashByIndex._next_hash()
 		return instance
 
