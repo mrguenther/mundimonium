@@ -27,13 +27,12 @@ class Tessellation:
 	def add_vertex(
 			self,
 			new_vertex: "TessellationVertex",
-			adjacent_vertices: List["TessellationVertex"] = list()
-	) -> None:
+			adjacent_vertices: List["TessellationVertex"] = list()) -> None:
 		self._vertex_graph[new_vertex] = adjacent_vertices
 		for vertex in adjacent_vertices:
 			self._vertex_graph[vertex].append(new_vertex)
 
-	def add_face(self, bounding_vertices: List["TessellationFace"]):
+	def add_face(self, bounding_vertices: List["TessellationFace"]) -> None:
 		assert len(bounding_vertices) == 3, (
 				"A face must be bounded by exactly three vertices.")
 		new_face = self.face_type(*bounding_vertices)
@@ -44,14 +43,14 @@ class TessellationVertex(HashByIndex):
 		self._projection_coordinates = projection_coordinates
 		self._adjacent_faces = list()
 
-	def add_adjacent_face(self, face):
+	def add_adjacent_face(self, face: "TessellationFace") -> None:
 		if face not in self._adjacent_faces:
 			self._adjacent_faces.append(face)
 
-	def is_adjacent_to(self, face):
+	def is_adjacent_to(self, face: "TessellationFace") -> bool:
 		return face in self._adjacent_faces
 
-	def is_adjacent_to(self, vertex):
+	def is_adjacent_to(self, vertex: "TessellationVertex") -> bool:
 		for face in self._adjacent_faces:
 			if face.is_adjacent_to(vertex):
 				return vertex is not self
@@ -66,36 +65,36 @@ class TessellationVertex(HashByIndex):
 		raise NotImplementedError()
 
 	@property
-	def x(self):
+	def x(self) -> Number:
 		return self._projection_coordinates[0]
 
 	@property
-	def y(self):
+	def y(self) -> Number:
 		return self._projection_coordinates[1]
 
 	@property
-	def z(self):
+	def z(self) -> Number:
 		return self._projection_coordinates[2]
 
 	@x.setter
-	def x(self, new_x):
+	def x(self, new_x: Number) -> None:
 		self._projection_coordinates[0] = new_x
 		for face in self._adjacent_faces:
 			face.recalculate_centroid()
 
 	@y.setter
-	def y(self, new_y):
+	def y(self, new_y: Number) -> None:
 		self._projection_coordinates[1] = new_y
 		for face in self._adjacent_faces:
 			face.recalculate_centroid()
 
 	@z.setter
-	def z(self, new_z):
+	def z(self, new_z: Number) -> None:
 		self._projection_coordinates[2] = new_z
 		for face in self._adjacent_faces:
 			face.recalculate_centroid()
 
-	def adjacent_faces(self):
+	def adjacent_faces(self) -> List["TessellationFace"]:
 		return self._adjacent_faces
 
 
@@ -104,7 +103,11 @@ class TessellationFace(HashByIndex, IsometricGrid):
 	APOTHEM_TO_ALTITUDE = 3
 	BASE_TO_APOTHEM = BASE_TO_ALTITUDE / APOTHEM_TO_ALTITUDE
 
-	def __init__(self, vertex_b, vertex_s, vertex_d):
+	def __init__(
+			self,
+			vertex_b: "TessellationVertex",
+			vertex_s: "TessellationVertex",
+			vertex_d: "TessellationVertex"):
 		self._adjacent_faces = [None] * len(IsometricDirection)
 		self._adjacent_vertices = [vertex_b, vertex_s, vertex_d]
 
@@ -119,13 +122,16 @@ class TessellationFace(HashByIndex, IsometricGrid):
 		self._centroid = None
 		self.recalculate_centroid()
 
-	def vertex_at(self, opposite_edge):
+	def vertex_at(self, opposite_edge: "IsometricDirection"
+			) -> "TessellationVertex":
 		return self._adjacent_vertices[opposite_edge.value]
 
-	def face_on_edge(self, intervening_edge):
+	def face_on_edge(self, intervening_edge: "IsometricDirection"
+			) -> "TessellationFace":
 		return self._adjacent_faces[intervening_edge.value]
 
-	def direction_toward_vertex(self, adjacent_vertex):
+	def direction_toward_vertex(self, adjacent_vertex: "TessellationVertex"
+			) -> "IsometricDirection":
 		try:
 			return IsometricDirection(
 					self._adjacent_vertices.index(adjacent_vertex))
@@ -133,7 +139,8 @@ class TessellationFace(HashByIndex, IsometricGrid):
 			raise NotAdjacentException(
 					"The provided vertex is not adjacent to this face.")
 
-	def direction_from_face(self, adjacent_face):
+	def direction_from_face(self, adjacent_face: "TessellationFace"
+			) -> "IsometricDirection":
 		try:
 			return IsometricDirection(self._adjacent_faces.index(adjacent_face))
 		except ValueError:
@@ -186,5 +193,5 @@ if __name__ == '__main__':
 	print(f"(b - a): |{b - a}| = {(b - a).length} = {b.distance_from(a)}")
 	print(f"(a - c): |{a - c}| = {(a - c).length} = {a.distance_from(c)}")
 	print(f"(c - a): |{c - a}| = {(c - a).length} = {c.distance_from(a)}")
-	print(f"(c - b): |{c - b}| = {(c - b).length} = {c.distance_from(b)}")
 	print(f"(b - c): |{b - c}| = {(b - c).length} = {b.distance_from(c)}")
+	print(f"(c - b): |{c - b}| = {(c - b).length} = {c.distance_from(b)}")

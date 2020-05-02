@@ -8,7 +8,7 @@ from numbers import Number
 from typing import Optional
 
 
-def isometric_distance(delta_axis_1, delta_axis_2):
+def isometric_distance(delta_axis_1: Number, delta_axis_2: Number) -> Number:
 	"""
 	Finds a distance on the isometric grid given deltas in two isometric axes.
 
