@@ -14,7 +14,7 @@ def isometric_distance(delta_axis_1, delta_axis_2):
 
 	By the law of cosines, this is sqrt(a**2 + b**2 - 2*a*b*cos(angle C)). The
 	angle in question is always 60 degrees, making 2*cos(angle C) equal to 1.
-	This leaves sqrt(a**2 + b**2 - 2*a*b).
+	This leaves sqrt(a**2 + b**2 - a*b).
 	"""
 	return sqrt(delta_axis_1**2 + delta_axis_2**2 - delta_axis_1 * delta_axis_2)
 
