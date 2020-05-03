@@ -89,6 +89,10 @@ class TessellationVertex(HashByIndex):
 	def z(self) -> Number:
 		return self._projection_coordinates[2]
 
+	@property
+	def projection_coordinates(self):
+		return tuple(self._projection_coordinates)
+
 	@x.setter
 	def x(self, new_x: Number) -> None:
 		self._projection_coordinates[0] = new_x
@@ -250,6 +254,18 @@ if __name__ == '__main__':
 					grid_prime, vert_b_prime, vert_s_prime, vert_d_prime]])
 
 	print()
+	print(r"   (1)")
+	print(r"  /   \   grid : <b,  s,  d > = <(1), (2), (3)>")
+	print(r"(2)---(3)")
+	print(r"  \   /   grid': <b', s', d'> = <(4), (3), (2)>")
+	print(r"   (4)")
+	print()
+	print("Coordinates (x,y,z) of vertices:")
+	print("(1):", vert_b.projection_coordinates)
+	print("(2):", vert_s.projection_coordinates)
+	print("(3):", vert_d.projection_coordinates)
+	print("(4):", vert_b_prime.projection_coordinates)
+	print()
 	print("Adjacency matrix:")
 	print("      | grid   b     s     d    grid'  b'    s'    d'  ")
 	print("------+------------------------------------------------")
@@ -262,8 +278,8 @@ if __name__ == '__main__':
 	print("s'    |", adjacency_string(vert_s_prime))
 	print("d'    |", adjacency_string(vert_d_prime))
 	print()
-	print("Centroid of grid:      ", grid.centroid)
-	print("Centroid of grid_prime:", grid_prime.centroid)
+	print("Centroid of grid: ", grid.centroid)
+	print("Centroid of grid':", grid_prime.centroid)
 	print()
 	print("Local directions facing toward adjacent vertices:")
 	print(f"grid  -> b:  {grid.direction_toward_vertex(vert_b)}")
@@ -274,8 +290,8 @@ if __name__ == '__main__':
 	print(f"grid' -> d': {grid_prime.direction_toward_vertex(vert_d_prime)}")
 	print()
 	print("Local directions facing toward adjacent faces:")
-	print(f"grid -> grid_prime: -{grid.direction_opposite_face(grid_prime)}")
-	print(f"grid_prime -> grid: -{grid_prime.direction_opposite_face(grid)}")
+	print(f"grid -> grid': -{grid.direction_opposite_face(grid_prime)}")
+	print(f"grid' -> grid: -{grid_prime.direction_opposite_face(grid)}")
 	print()
 	print("Points (b,s,d) within grid:")
 	print("a:", a)
