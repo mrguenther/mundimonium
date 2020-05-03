@@ -26,7 +26,7 @@ benchmarks = [
 ]
 
 def main():
-	setup = "from benchmarks import benchmarks"
+	setup = "from mundimonium.layers.coordinates.benchmarks import benchmarks"
 	results = [None] * len(benchmarks)
 	for i in range(len(benchmarks)):
 		results[i] = timeit.timeit(f"benchmarks[{i}]()", setup=setup)

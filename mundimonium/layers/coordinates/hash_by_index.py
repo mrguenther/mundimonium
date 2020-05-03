@@ -9,7 +9,7 @@ class HashByIndex:
 	def _next_hash(cls) -> int:
 		cls._hash_index = (
 				(cls._hash_index + 1) & cls._MAX_INDEX)
-		return hash((cls._hash_index,))
+		return hash(cls._hash_index)
 
 	@classmethod
 	def hash_index(cls) -> int:
