@@ -1,7 +1,8 @@
 from mundimonium.layers.coordinates.exceptions import NotAdjacentException
 from mundimonium.layers.coordinates.hash_by_index import HashByIndex
 from mundimonium.layers.coordinates.isometric import \
-		IsometricDirection, IsometricGrid, IsometricPoint, IsometricVector
+		IsometricDirection, IsometricGrid, IsometricPoint, IsometricVector, \
+		isometric_distance
 
 import itertools
 import math
@@ -136,7 +137,7 @@ class TessellationFace(HashByIndex, IsometricGrid):
 		self._apothem = self._side_length * TessellationFace.BASE_TO_APOTHEM
 		self._altitude = self._side_length * TessellationFace.BASE_TO_ALTITUDE
 
-		self._centroid = None
+		self._centroid_external = None
 		self.recalculate_centroid()
 
 	def is_adjacent_to_face(self, face: "TessellationFace") -> bool:
@@ -170,7 +171,7 @@ class TessellationFace(HashByIndex, IsometricGrid):
 					"The provided vertex is not adjacent to this face."
 					) from None
 
-	def direction_opposite_face(self, adjacent_face: "TessellationFace"
+	def direction_away_from_face(self, adjacent_face: "TessellationFace"
 			) -> "IsometricDirection":
 		try:
 			return IsometricDirection(self._adjacent_faces.index(adjacent_face))
@@ -179,7 +180,7 @@ class TessellationFace(HashByIndex, IsometricGrid):
 					"The provided faces are not adjacent.") from None
 
 	def recalculate_centroid(self) -> None:
-		self._centroid = tuple(
+		self._centroid_external = tuple(
 			sum([getattr(v, axis) for v in self._adjacent_vertices]) /
 			len(self._adjacent_vertices) for axis in "xyz")
 
@@ -216,8 +217,12 @@ class TessellationFace(HashByIndex, IsometricGrid):
 		return self._altitude
 
 	@property
-	def centroid(self):
-		return self._centroid
+	def centroid_external(self):
+		return self._centroid_external
+
+	@property
+	def centroid_internal(self):
+		return IsometricPoint.center(self)
 
 	@property
 	def tessellation_type(self):
@@ -232,8 +237,8 @@ if __name__ == '__main__':
 	apothem = math.sqrt(3)/6
 
 	vert_b = TessellationVertex([0, 2*apothem, 0])
-	vert_s = TessellationVertex([-1/2, -apothem, 0])
-	vert_d = TessellationVertex([1/2, -apothem, 0])
+	vert_s = TessellationVertex([1/2, -apothem, 0])
+	vert_d = TessellationVertex([-1/2, -apothem, 0])
 
 	grid = TessellationFace(vert_b, vert_s, vert_d)
 
@@ -244,9 +249,12 @@ if __name__ == '__main__':
 
 	grid_prime = TessellationFace(vert_b_prime, vert_s_prime, vert_d_prime)
 
-	a = IsometricPoint.center(grid)
-	b = IsometricPoint(grid, apothem + 0.2, apothem + 0.2)
-	c = IsometricPoint(grid, apothem + 0.2, apothem - 0.2)
+	assert(apothem == grid.apothem)
+	assert(apothem == grid_prime.apothem)
+
+	pt_a = IsometricPoint.center(grid)
+	pt_b = IsometricPoint(grid, apothem + 0.2, apothem + 0.2)
+	pt_c = IsometricPoint(grid, apothem + 0.2, apothem - 0.2)
 
 	adjacency_string = lambda node: " ".join(
 			[str(node.is_adjacent_to(other)).ljust(5) for other in [
@@ -256,7 +264,7 @@ if __name__ == '__main__':
 	print()
 	print(r"   (1)")
 	print(r"  /   \   grid : <b,  s,  d > = <(1), (2), (3)>")
-	print(r"(2)---(3)")
+	print(r"(3)---(2)")
 	print(r"  \   /   grid': <b', s', d'> = <(4), (3), (2)>")
 	print(r"   (4)")
 	print()
@@ -278,8 +286,8 @@ if __name__ == '__main__':
 	print("s'    |", adjacency_string(vert_s_prime))
 	print("d'    |", adjacency_string(vert_d_prime))
 	print()
-	print("Centroid of grid: ", grid.centroid)
-	print("Centroid of grid':", grid_prime.centroid)
+	print("Centroid (x,y,z) of grid: ", grid.centroid_external)
+	print("Centroid (x,y,z) of grid':", grid_prime.centroid_external)
 	print()
 	print("Local directions facing toward adjacent vertices:")
 	print(f"grid  -> b:  {grid.direction_toward_vertex(vert_b)}")
@@ -290,24 +298,44 @@ if __name__ == '__main__':
 	print(f"grid' -> d': {grid_prime.direction_toward_vertex(vert_d_prime)}")
 	print()
 	print("Local directions facing toward adjacent faces:")
-	print(f"grid -> grid': -{grid.direction_opposite_face(grid_prime)}")
-	print(f"grid' -> grid: -{grid_prime.direction_opposite_face(grid)}")
+	print(f"grid -> grid': -{grid.direction_away_from_face(grid_prime)}")
+	print(f"grid' -> grid: -{grid_prime.direction_away_from_face(grid)}")
 	print()
 	print("Points (b,s,d) within grid:")
-	print("a:", a)
-	print("b:", b)
-	print("c:", c)
+	print("a:", pt_a)
+	print("b:", pt_b)
+	print("c:", pt_c)
 	print()
 	print("Vectors <Δb,Δs,Δd> within grid:")
-	assert((a - b).length == a.distance_from(b))
-	assert((b - a).length == b.distance_from(a))
-	assert((a - c).length == a.distance_from(c))
-	assert((c - a).length == c.distance_from(a))
-	assert((b - c).length == b.distance_from(c))
-	assert((c - b).length == c.distance_from(b))
-	print(f"(a - b): |{a - b}| = {(a - b).length}")
-	print(f"(b - a): |{b - a}| = {(b - a).length}")
-	print(f"(a - c): |{a - c}| = {(a - c).length}")
-	print(f"(c - a): |{c - a}| = {(c - a).length}")
-	print(f"(b - c): |{b - c}| = {(b - c).length}")
-	print(f"(c - b): |{c - b}| = {(c - b).length}")
+	assert((pt_a - pt_b).length == pt_a.distance_from(pt_b))
+	assert((pt_b - pt_a).length == pt_b.distance_from(pt_a))
+	assert((pt_a - pt_c).length == pt_a.distance_from(pt_c))
+	assert((pt_c - pt_a).length == pt_c.distance_from(pt_a))
+	assert((pt_b - pt_c).length == pt_b.distance_from(pt_c))
+	assert((pt_c - pt_b).length == pt_c.distance_from(pt_b))
+	print(f"(a - b): |{pt_a - pt_b}| = {(pt_a - pt_b).length}")
+	print(f"(b - a): |{pt_b - pt_a}| = {(pt_b - pt_a).length}")
+	print(f"(a - c): |{pt_a - pt_c}| = {(pt_a - pt_c).length}")
+	print(f"(c - a): |{pt_c - pt_a}| = {(pt_c - pt_a).length}")
+	print(f"(b - c): |{pt_b - pt_c}| = {(pt_b - pt_c).length}")
+	print(f"(c - b): |{pt_c - pt_b}| = {(pt_c - pt_b).length}")
+	print()
+	print("Distances from points within grid to centroid (b,s,d) of grid':")
+	print("from a:", pt_a.distance_from(IsometricPoint.center(grid_prime)))
+	print("from b:", pt_b.distance_from(IsometricPoint.center(grid_prime)))
+	print("from c:", pt_c.distance_from(IsometricPoint.center(grid_prime)))
+	print()
+
+	print(pt_a)
+	print(pt_b)
+	print(pt_a - pt_b)
+	print()
+
+	print(pt_a)
+	print(pt_a.project_onto_adjacent_grid(grid_prime))
+	print()
+
+	v1 = IsometricVector(-2*apothem, -2*apothem)
+	print(v1.b_component, v1.s_component, v1.d_component)
+	print(v1.delta_b, v1.delta_s, v1.delta_d)
+	print(IsometricPoint.center(grid) + v1)
