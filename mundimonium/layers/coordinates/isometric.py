@@ -81,25 +81,41 @@ class IsometricPoint(HashByIndex):
 		well defined, this requires that `other.grid` and `grid` share an edge.
 		"""
 		if adjacent_grid is self.grid:
-			return IsometricPoint(adjacent_grid, self.b, self.s)
-		apothem_sum = adjacent_grid.apothem + self.grid.apothem
-		old_border_edge = self.grid.direction_from_face(adjacent_grid)
-		new_border_edge = adjacent_grid.direction_from_face(self.grid)
-		local_complement_of_new_b = IsometricDirection(
-				old_border_edge.value - new_border_edge.value)
+			return IsometricPoint(self.grid, self.b, self.s)
+		altitude_mean = (adjacent_grid.altitude + self.grid.altitude) / 2
+		old_border_edge = self.grid.direction_away_from_face(adjacent_grid)
+		new_border_edge = adjacent_grid.direction_away_from_face(self.grid)
+		local_complement_of_new_b = old_border_edge.rotated_ccw_by_index(
+				new_border_edge.value)
 		local_complement_of_new_s = \
 				local_complement_of_new_b.rotated_cw_by_index(1)
 		projected_point = IsometricPoint(
 				adjacent_grid,
-				apothem_sum - self[local_complement_of_new_b],
-				apothem_sum - self[local_complement_of_new_s])
-		projected_point[new_border_edge] -= apothem_sum
+				altitude_mean - self[local_complement_of_new_b],
+				altitude_mean - self[local_complement_of_new_s])
+		if new_border_edge == IsometricDirection.B:
+			projected_point._b -= altitude_mean
+		elif new_border_edge == IsometricDirection.S:
+			projected_point._s -= altitude_mean
+		# print()
+		# print(self.b / self.grid.apothem, projected_point.b / self.grid.apothem)
+		# print(self.s / self.grid.apothem, projected_point.s / self.grid.apothem)
+		# print(self.d / self.grid.apothem, projected_point.d / self.grid.apothem)
+		# print()
 		return projected_point
 
-	def distance_from(self, other) -> Number:
-		assert self.grid is other.grid, \
-				"distance_from() must take two points on the same grid."
-		return isometric_distance(other.b - self.b, other.s - self.s)
+	def distance_from(self, other: "IsometricPoint") -> Number:
+		if self.grid is other.grid:
+			return isometric_distance(other.b - self.b, other.s - self.s)
+		elif self.grid.is_adjacent_to_face(other.grid):
+			return self.project_onto_adjacent_grid(other.grid).distance_from(
+					other)
+		else:
+			return distance_from_remote_point(other)
+
+	def distance_from_remote_point(self, other: "IsometricPoint") -> Number:
+		return NotImplementedError(
+				"The general case of this function is not yet implemented.")
 
 	def __repr__(self) -> str:
 		return f"<id {hash(self)}: {str(self)} in grid {repr(self.grid)}>"
@@ -130,13 +146,22 @@ class IsometricPoint(HashByIndex):
 	def __add__(self, other: "IsometricVector") -> "IsometricPoint":
 		assert type(other) is IsometricVector, "Invalid __add__() operand."
 		return IsometricPoint(
-				self.grid,
-				self.b + other.delta_b,
-				self.s + other.delta_s)
+				self.grid, self.b + other.delta_b, self.s + other.delta_s)
 
-	def __sub__(self, other: "IsometricVector") -> "IsometricPoint":
-		assert type(other) is IsometricPoint, "Invalid __sub__() operand."
+	def _sub_point(self, other: "IsometricPoint") -> "IsometricVector":
 		return IsometricVector(self.b - other.b, self.s - other.s)
+
+	def _sub_vector(self, other: "IsometricVector") -> "IsometricPoint":
+		return IsometricPoint(
+				self.grid, self.b - other.delta_b, self.s - other.delta_s)
+
+	def __sub__(self, other):
+		if isinstance(other, IsometricPoint):
+			return self._sub_point(other)
+		elif isinstance(other, IsometricVector):
+			return self._sub_vector(other)
+		else:
+			raise ValueError("Invalid __sub__() operand.")
 
 	def move_to(
 			self,
