@@ -1,9 +1,9 @@
 
 
 class NationState:
-	"""
-	TODO
-	"""
-	def __init__(self):
-		# TODO
-		pass
+  """
+  TODO
+  """
+  def __init__(self):
+    # TODO
+    pass

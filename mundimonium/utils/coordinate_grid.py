@@ -7,129 +7,129 @@ from enum import Enum, auto
 
 
 class CoordinateSpace(Enum):
-	"""
-	Enum for specifying the coordinate space of a grid.
-	"""
+  """
+  Enum for specifying the coordinate space of a grid.
+  """
 
-	CARTESIAN = auto()
-	SPHERICAL = auto()
+  CARTESIAN = auto()
+  SPHERICAL = auto()
 
 
 class CoordinateGrid:
-	"""
-	TODO
-	"""
+  """
+  TODO
+  """
 
-	defaultDistanceUnit = DistanceUnit.MILE
-	coordinateSpace = None
+  defaultDistanceUnit = DistanceUnit.MILE
+  coordinateSpace = None
 
-	def __init__(self):
-		self.distanceUnit = self.defaultDistanceUnit
+  def __init__(self):
+    self.distanceUnit = self.defaultDistanceUnit
 
-	def distance(self, pt1, pt2):
-		"""
-		Calculates the distance between two points in the grid, given as coordinate-pair tuples.
-		"""
-		raise NotImplementedError("Requires a coordinate system.")
+  def distance(self, pt1, pt2):
+    """
+    Calculates the distance between two points in the grid, given as coordinate-pair tuples.
+    """
+    raise NotImplementedError("Requires a coordinate system.")
 
 
 class CartesianPoint:
-	"""
-	A point in a 3d CartesianGrid
+  """
+  A point in a 3d CartesianGrid
 
-	Attributes:
-		coords (Tuple[Number, Number, Number]): (x, y, z)
-	"""
+  Attributes:
+    coords (Tuple[Number, Number, Number]): (x, y, z)
+  """
 
-	def __init__(self, location: Tuple[Number, Number, Number]):
-		"""
-		Create the point at a location
+  def __init__(self, location: Tuple[Number, Number, Number]):
+    """
+    Create the point at a location
 
-		Arguments:
-			location (Tuple[Number, Number, Number]): Point creation location (x, y, z)
-		"""
+    Arguments:
+      location (Tuple[Number, Number, Number]): Point creation location (x, y, z)
+    """
 
-		if (not isinstance(location, tuple) or
-				not all(isinstance(i, Number) for i in location) or
-				not len(location) == 3):
-			raise TypeError("location must be Tuple[Number, Number, Number]")
+    if (not isinstance(location, tuple) or
+        not all(isinstance(i, Number) for i in location) or
+        not len(location) == 3):
+      raise TypeError("location must be Tuple[Number, Number, Number]")
 
-		self.coords = location
+    self.coords = location
 
-	def __hash__(self):
-		"""
-		Hash function - allows CartesianPoints objects to be used as hashables
-		"""
+  def __hash__(self):
+    """
+    Hash function - allows CartesianPoints objects to be used as hashables
+    """
 
-		return(hash(self.coords))
+    return(hash(self.coords))
 
-	def __eq__(self, other) -> bool:
-		"""
-		Equivalence function - allows comparison and usage of CartesianPoint objects as hashables
-		Note that tuples are compared against CartesianPoint.coords for equivalency
-		"""
+  def __eq__(self, other) -> bool:
+    """
+    Equivalence function - allows comparison and usage of CartesianPoint objects as hashables
+    Note that tuples are compared against CartesianPoint.coords for equivalency
+    """
 
-		if type(self) == type(other):
-			return(self.__hash__() == other.__hash__())
-		if type(other) == tuple:
-			return(self.coords == other)
-		return(False)
+    if type(self) == type(other):
+      return(self.__hash__() == other.__hash__())
+    if type(other) == tuple:
+      return(self.coords == other)
+    return(False)
 
-	def __repr__(self) -> str:
-		"""
-		Human-readable print function
-		"""
+  def __repr__(self) -> str:
+    """
+    Human-readable print function
+    """
 
-		return("CartesianPoint(%(coords)s)" %
-			{'coords': str(self.coords)})
+    return("CartesianPoint(%(coords)s)" %
+      {'coords': str(self.coords)})
 
-	def distanceTo(self, point: Union['CartesianPoint', tuple]) -> float:
-		"""
-		Determine the distance to a point
+  def distanceTo(self, point: Union['CartesianPoint', tuple]) -> float:
+    """
+    Determine the distance to a point
 
-		Arguments:
-			point {CartesianPoint, tuple}
+    Arguments:
+      point {CartesianPoint, tuple}
 
-		Returns:
-			distance {float}
-		"""
+    Returns:
+      distance {float}
+    """
 
-		if type(point) is tuple:
-			point = CartesianPoint(point)
-		dist = float(np.sum(np.power(np.subtract(self.coords, point.coords), 2)) ** .5)
-		return (dist)
+    if type(point) is tuple:
+      point = CartesianPoint(point)
+    dist = float(np.sum(np.power(np.subtract(self.coords, point.coords), 2)) ** .5)
+    return (dist)
 
 
 class CartesianGrid(CoordinateGrid):
-	"""
-	A Cartesian grid for mapping areas on a local scale.
-	"""
+  """
+  A Cartesian grid for mapping areas on a local scale.
+  """
 
-	def __init__(self):
-		self.coordinateSpace = CoordinateSpace.CARTESIAN
+  def __init__(self):
+    self.coordinateSpace = CoordinateSpace.CARTESIAN
 
-	def distance(self, pt1, pt2):
-		"""
-		Calculates the distance between two points in the grid, given as coordinate-pair tuples.
-		"""
+  def distance(self, pt1, pt2):
+    """
+    Calculates the distance between two points in the grid, given as coordinate-pair tuples.
+    """
 
-		pass
+    pass
 
 
 class SphericalGrid(CoordinateGrid):
-	"""
-	A spherical polar grid (with constant r) for mapping areas on a global scale.
+  """
+  A spherical polar grid (with constant r) for mapping areas on a global scale.
 
-	Parameters theta and phi are internally stored as radians to simplify calculations.
-	"""
+  Parameters theta and phi are internally stored as radians to simplify calculations.
+  """
 
-	def __init__(self, sphereRadius):
-		self.coordinateSpace = CoordinateSpace.SPHERICAL
-		self.sphereRadius = sphereRadius  # Radius in self.distanceUnit
+  def __init__(self, sphereRadius):
+    self.coordinateSpace = CoordinateSpace.SPHERICAL
+    self.sphereRadius = sphereRadius  # Radius in self.distanceUnit
 
-	def distance(self, pt1, pt2):
-		"""
-		Calculates the distance between two points in the grid, given as coordinate-pair tuples.
-		"""
+  def distance(self, pt1, pt2):
+    """
+    Calculates the distance between two points in the grid, given as coordinate-pair tuples.
+    """
 
-		pass
+    pass
