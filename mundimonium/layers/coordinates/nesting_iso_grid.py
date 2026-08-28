@@ -1,11 +1,9 @@
 from mundimonium.layers.coordinates.isometric \
     import IsometricGrid, IsometricPoint
 
-from typing import Optional, Type
 
 class IsoGridSector:
-  def __init__(
-      self, parent_grid: "IsoGridSectorTable"):
+  def __init__(self, parent_grid: IsoGridSectorTable):
     self._parent_grid = parent_grid
 
 
@@ -26,18 +24,16 @@ class IsoGridSectorTable(IsometricGrid):
     for key in self._sectors.keys():
       print(f"{key:0>5d}")
 
-  def __getitem__(self, near_point: IsometricPoint
-      ) -> Optional[IsoGridSector]:
+  def __getitem__(self, near_point: IsometricPoint) -> IsoGridSector | None:
     return self._sectors[self._hash_point(near_point)]
 
   def __setitem__(
-      self, near_point: IsometricPoint, sector: Optional[IsoGridSector]
-      ) -> None:
+      self, near_point: IsometricPoint, sector: IsoGridSector | None) -> None:
     self._sectors[self._hash_point(near_point)] = sector
 
   def get_or_insert(
       self, near_point: IsometricPoint, sector: IsoGridSector
-      ) -> IsoGridSector:
+  ) -> IsoGridSector:
     key = self._hash_point(near_point)
     if self._sectors[key] is None:
       self._sectors[key] = sector
@@ -45,16 +41,19 @@ class IsoGridSectorTable(IsometricGrid):
     return self._sectors[key]
 
   def get_or_emplace(
-      self, near_point: IsometricPoint, sector_type: Type[IsoGridSector],
-      *args, **kwargs) -> IsoGridSector:
+      self,
+      near_point: IsometricPoint,
+      sector_type: type[IsoGridSector],
+      *args,
+      **kwargs) -> IsoGridSector:
     key = self._hash_point(near_point)
     if self._sectors[key] is None:
       self._sectors[key] = sector_type(self, *args, **kwargs)
 
     return self._sectors[key]
 
-  def _hash_sector_indices(self, b_index: int, s_index: int, d_index: int
-      ) -> int:
+  def _hash_sector_indices(
+      self, b_index: int, s_index: int, d_index: int) -> int:
     # TODO: Optimize this to generate a list index instead of an arbitrary
     # dict key. The list will have size resolution**2, or the sum of 2n-1
     # for n in the range 1..resolution.
@@ -79,7 +78,8 @@ class IsoGridSectorTable(IsometricGrid):
     return self._hash_sector_indices(
         int(point.b * scale_factor),
         int(point.s * scale_factor),
-        int(point.d * scale_factor))
+        int(point.d * scale_factor),
+    )
 
   @property
   def resolution(self):
@@ -88,8 +88,8 @@ class IsoGridSectorTable(IsometricGrid):
 
 class NestingIsoGrid(IsoGridSectorTable):
   def __init__(
-      self, resolution: Optional[int],
-      parent_sector: Optional[IsoGridSector] = None):
+      self, resolution: int | None,
+      parent_sector: IsoGridSector | None = None):
     self._sectors = None
     self._resolution = resolution
 
@@ -101,13 +101,14 @@ class NestingIsoGrid(IsoGridSectorTable):
     self._parent_sector = parent_sector
 
   def get_or_emplace(
-      self, near_point: IsometricPoint,
-      sector_type: Optional[Type[IsoGridSector]] = None, *args, **kwargs
-      ) -> IsoGridSector:
-    return IsoGridSectorTable.get_or_emplace(
+      self,
+      near_point: IsometricPoint,
+      sector_type: type[IsoGridSector] | None = None,
+      *args,
+      **kwargs) -> IsoGridSector:
+    return super().get_or_emplace(
         self, near_point,
-        self.default_sector_type if sector_type is None
-            else sector_type,
+        self.default_sector_type if sector_type is None else sector_type,
         *args, **kwargs)
 
   @property

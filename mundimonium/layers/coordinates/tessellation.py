@@ -1,50 +1,133 @@
+from __future__ import annotations
+
 from mundimonium.layers.coordinates.exceptions import NotAdjacentException
 from mundimonium.layers.coordinates.hash_by_index import HashByIndex
-from mundimonium.layers.coordinates.isometric import \
-    IsometricDirection, IsometricGrid, IsometricPoint, IsometricVector, \
+from mundimonium.layers.coordinates.isometric import (
+    IsometricDirection, IsometricGrid, IsometricPoint, IsometricVector,
     isometric_distance
+)
 
+import abc
 import itertools
 import math
 from numbers import Number
-from typing import Optional, List
+from typing import override
+import numpy as np
 
 
-class Tessellation:
+class Tessellation(abc.ABC):
+  """
+  Abstract base class for equilateral triangular meshes.
+  """
+
   def __init__(self):
     self._vertex_graph = dict()
+    self._vertices: list[TessellationVertex] = []
+    self._faces: list[TessellationFace] = []
+    self._vertex_index_map: dict[TessellationVertex, int] = {}
+    self._face_index_map: dict[TessellationFace, int] = {}
 
   @property
-  def vertex_type(self) -> type:
-    raise NotImplementedError()
+  def vertex_type(self) -> type[TessellationVertex]:
+    return TessellationVertex
 
   @property
-  def face_type(self) -> type:
-    raise NotImplementedError()
+  def face_type(self) -> type[TessellationFace]:
+    return TessellationFace
 
   def _generate_tessellation(self) -> None:
     raise NotImplementedError()
 
+  def invalidate_solvers(self) -> None:
+    """Hook for subclasses to invalidate solver caches when topology changes."""
+    pass
+
   def add_vertex(
       self,
-      new_vertex: "TessellationVertex",
-      adjacent_vertices: List["TessellationVertex"] = list()) -> None:
-    self._vertex_graph[new_vertex] = adjacent_vertices
+      new_vertex: TessellationVertex,
+      adjacent_vertices: list[TessellationVertex] | None = None) -> int:
+    if adjacent_vertices is None:
+      adjacent_vertices = list()
+    self._vertex_graph[new_vertex] = list(adjacent_vertices)
     for vertex in adjacent_vertices:
-      self._vertex_graph[vertex].append(new_vertex)
+      if vertex in self._vertex_graph:
+        self._vertex_graph[vertex].append(new_vertex)
 
-  def add_face(self, bounding_vertices: List["TessellationFace"]) -> None:
+    if new_vertex not in self._vertex_index_map:
+      idx = len(self._vertices)
+      self._vertex_index_map[new_vertex] = idx
+      self._vertices.append(new_vertex)
+      new_vertex.tessellation = self
+      self.invalidate_solvers()
+    return self._vertex_index_map[new_vertex]
+
+  def register_face(self, face: TessellationFace) -> int:
+    """Registers an existing TessellationFace in this tessellation."""
+    if face not in self._face_index_map:
+      idx = len(self._faces)
+      self._faces.append(face)
+      self._face_index_map[face] = idx
+      face.tessellation = self
+      for v in face._adjacent_vertices:
+        if v not in self._vertex_index_map:
+          self.add_vertex(v)
+      self.invalidate_solvers()
+    return self._face_index_map[face]
+
+  def add_face(
+      self,
+      bounding_vertices: list[TessellationVertex] | TessellationFace
+  ) -> TessellationFace:
+    if isinstance(bounding_vertices, TessellationFace):
+      self.register_face(bounding_vertices)
+      return bounding_vertices
+
     assert len(bounding_vertices) == 3, (
         "A face must be bounded by exactly three vertices.")
     new_face = self.face_type(*bounding_vertices)
+    self.register_face(new_face)
+    return new_face
+
+  def distance(self, p1: IsometricPoint, p2: IsometricPoint) -> Number:
+    """
+    Computes geodesic distance between two arbitrary points on the mesh.
+    Subclasses should override this method with specific solvers.
+    """
+    return self.face_type.distance(p1, p2)
+
+  @abc.abstractmethod
+  def geodesic_distance(
+      self, p1: IsometricPoint, p2: IsometricPoint) -> Number | None:
+    raise NotImplementedError()
+
+  @abc.abstractmethod
+  def shortest_path(
+      self,
+      p1: IsometricPoint,
+      p2: IsometricPoint
+  ) -> list[IsometricPoint]:
+    """
+    Traces the geodesic path from p1 to p2 across faces.
+    Subclasses should override this method with specific path tracers.
+    """
+    raise NotImplementedError()
 
 
 class TessellationVertex(HashByIndex):
-  def __init__(self, projection_coordinates: List[Number]):
+  def __init__(self, projection_coordinates: list[Number]):
     self._projection_coordinates = projection_coordinates
     self._adjacent_faces = list()
+    self._tessellation: Tessellation | None = None
 
-  def add_adjacent_face(self, face: "TessellationFace") -> None:
+  @property
+  def tessellation(self) -> Tessellation | None:
+    return self._tessellation
+
+  @tessellation.setter
+  def tessellation(self, val: Tessellation) -> None:
+    self._tessellation = val
+
+  def add_adjacent_face(self, face: TessellationFace) -> None:
     if face in self._adjacent_faces:
       return
 
@@ -54,10 +137,10 @@ class TessellationVertex(HashByIndex):
       if other_face is not face:
         other_face.recalculate_adjacency_to(face)
 
-  def is_adjacent_to_face(self, face: "TessellationFace") -> bool:
+  def is_adjacent_to_face(self, face: TessellationFace) -> bool:
     return face in self._adjacent_faces
 
-  def is_adjacent_to_vertex(self, vertex: "TessellationVertex") -> bool:
+  def is_adjacent_to_vertex(self, vertex: TessellationVertex) -> bool:
     for face in self._adjacent_faces:
       if face.is_adjacent_to_vertex(vertex):
         return vertex is not self
@@ -112,7 +195,7 @@ class TessellationVertex(HashByIndex):
     for face in self._adjacent_faces:
       face.recalculate_centroid()
 
-  def adjacent_faces(self) -> List["TessellationFace"]:
+  def adjacent_faces(self) -> list[TessellationFace]:
     return self._adjacent_faces
 
 
@@ -123,11 +206,12 @@ class TessellationFace(HashByIndex, IsometricGrid):
 
   def __init__(
       self,
-      vertex_b: "TessellationVertex",
-      vertex_s: "TessellationVertex",
-      vertex_d: "TessellationVertex"):
+      vertex_b: TessellationVertex,
+      vertex_s: TessellationVertex,
+      vertex_d: TessellationVertex):
     self._adjacent_faces = [None] * len(IsometricDirection)
     self._adjacent_vertices = [vertex_b, vertex_s, vertex_d]
+    self._tessellation: Tessellation | None = None
 
     for vertex in self._adjacent_vertices:
       vertex.add_adjacent_face(self)
@@ -140,10 +224,49 @@ class TessellationFace(HashByIndex, IsometricGrid):
     self._centroid_external = None
     self.recalculate_centroid()
 
-  def is_adjacent_to_face(self, face: "TessellationFace") -> bool:
+  @classmethod
+  @override
+  def nearby_grid_distance(
+      cls, p1: IsometricPoint, p2: IsometricPoint) -> Number | None:
+    grid_1 = p1.grid
+    grid_2 = p2.grid
+    assert isinstance(grid_1, cls)
+    assert isinstance(grid_2, cls)
+
+    if grid_1.is_adjacent_to_face(grid_2):
+      return p1.project_onto_adjacent_grid(grid_2).distance_from(p2)
+
+    return None
+
+  @classmethod
+  @override
+  def geodesic_distance(cls, p1: IsometricPoint, p2: IsometricPoint) -> Number:
+    return p1.grid.tessellation.geodesic_distance(p1, p2)
+
+  @property
+  def tessellation(self) -> Tessellation | None:
+    return self._tessellation
+
+  @tessellation.setter
+  def tessellation(self, val: Tessellation) -> None:
+    self._tessellation = val
+
+  @property
+  def vertex_b(self) -> TessellationVertex:
+    return self._adjacent_vertices[0]
+
+  @property
+  def vertex_s(self) -> TessellationVertex:
+    return self._adjacent_vertices[1]
+
+  @property
+  def vertex_d(self) -> TessellationVertex:
+    return self._adjacent_vertices[2]
+
+  def is_adjacent_to_face(self, face: TessellationFace) -> bool:
     return face in self._adjacent_faces
 
-  def is_adjacent_to_vertex(self, vertex: "TessellationVertex") -> bool:
+  def is_adjacent_to_vertex(self, vertex: TessellationVertex) -> bool:
     return vertex in self._adjacent_vertices
 
   def _is_adjacent_to_selector(self, arg_type: type):
@@ -153,40 +276,43 @@ class TessellationFace(HashByIndex, IsometricGrid):
   def is_adjacent_to(self, other):
     return self._is_adjacent_to_selector(type(other))(other)
 
-  def vertex_at(self, opposite_edge: "IsometricDirection"
-      ) -> "TessellationVertex":
+  def vertex_at(self, opposite_edge: IsometricDirection) -> TessellationVertex:
     return self._adjacent_vertices[opposite_edge.value]
 
-  def face_on_edge(self, intervening_edge: "IsometricDirection"
-      ) -> "TessellationFace":
+  def face_on_edge(
+      self, intervening_edge: IsometricDirection) -> TessellationFace:
     return self._adjacent_faces[intervening_edge.value]
 
-  def direction_toward_vertex(self, adjacent_vertex: "TessellationVertex"
-      ) -> "IsometricDirection":
+  def direction_toward_vertex(
+      self, adjacent_vertex: TessellationVertex) -> IsometricDirection:
     try:
       return IsometricDirection(
           self._adjacent_vertices.index(adjacent_vertex))
     except ValueError:
       raise NotAdjacentException(
           "The provided vertex is not adjacent to this face."
-          ) from None
+      ) from None
 
-  def direction_away_from_face(self, adjacent_face: "TessellationFace"
-      ) -> "IsometricDirection":
+  def direction_away_from_face(
+      self, adjacent_face: TessellationFace) -> IsometricDirection:
     try:
       return IsometricDirection(self._adjacent_faces.index(adjacent_face))
     except ValueError:
       raise NotAdjacentException(
-          "The provided faces are not adjacent.") from None
+          "The provided faces are not adjacent."
+      ) from None
 
   def recalculate_centroid(self) -> None:
     self._centroid_external = tuple(
-      sum([getattr(v, axis) for v in self._adjacent_vertices]) /
-      len(self._adjacent_vertices) for axis in "xyz")
+        sum([getattr(v, axis) for v in self._adjacent_vertices]) /
+            len(self._adjacent_vertices)
+        for axis in "xyz"
+    )
 
   def recalculate_adjacency_to(
-      self, other_face: "TessellationFace", call_bilaterally: bool = True
-      ) -> None:
+      self,
+      other_face: TessellationFace,
+      call_bilaterally: bool = True) -> None:
     shared_vertices = [
         v.is_adjacent_to_face(other_face) \
         for v in self._adjacent_vertices]
