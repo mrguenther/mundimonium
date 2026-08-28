@@ -1,14 +1,20 @@
+from __future__ import annotations
+
 from mundimonium.layers.coordinates.exceptions import NotAdjacentException
 from mundimonium.layers.coordinates.hash_by_index import HashByIndex
 from mundimonium.utils.helper_functions import argc
 
+from collections.abc import Iterable
 from enum import Enum
-from math import sqrt
 from numbers import Number
-from typing import Optional
+from typing import Self, override
+
+import abc
+import math
 
 
-def isometric_distance(component_axis_1: Number, component_axis_2: Number) -> Number:
+def isometric_distance(
+    component_axis_1: Number, component_axis_2: Number) -> Number:
   """
   Finds distance on the isometric grid given components in two isometric axes.
 
@@ -16,8 +22,10 @@ def isometric_distance(component_axis_1: Number, component_axis_2: Number) -> Nu
   angle in question is always 60 degrees, making 2*cos(angle C) equal to 1.
   This leaves sqrt(a**2 + b**2 - a*b).
   """
-  return sqrt(component_axis_1**2 + component_axis_2**2 - \
-        component_axis_1 * component_axis_2)
+  return math.sqrt(
+      component_axis_1**2 + component_axis_2**2 -
+      component_axis_1 * component_axis_2
+  )
 
 
 class IsometricDirection(Enum):
@@ -25,11 +33,11 @@ class IsometricDirection(Enum):
   S = 1
   D = 2
 
-  def rotated_cw_by_index(self, index: int) -> "IsometricDirection":
+  def rotated_cw_by_index(self, index: int) -> IsometricDirection:
     return IsometricDirection(
         (self.value + index) % len(IsometricDirection))
 
-  def rotated_ccw_by_index(self, index: int) -> "IsometricDirection":
+  def rotated_ccw_by_index(self, index: int) -> IsometricDirection:
     return IsometricDirection(
         (self.value - index) % len(IsometricDirection))
 
@@ -40,43 +48,157 @@ class IsometricDirection(Enum):
     return repr(self)
 
 
-class IsometricGrid:
+class IsometricGrid(abc.ABC):
   @property
+  @abc.abstractmethod
   def side_length(self) -> Number:
     raise NotImplementedError()
 
   @property
+  @abc.abstractmethod
   def apothem(self) -> Number:
     raise NotImplementedError()
 
   @property
+  @abc.abstractmethod
   def altitude(self) -> Number:
     raise NotImplementedError()
+
+  @classmethod
+  def distance(cls, p1: IsometricPoint, p2: IsometricPoint) -> Number | None:
+    """Distance between two points that may or may not share a grid.
+
+    If the two points share a grid, this will forward to `local_distance`.
+    If the two points don't share a grid but are on adjacent/nearby grids (as
+    defined by the implementation), this will forward to `nearby_grid_distance`.
+    If the two points don't share a grid and aren't adjacent/nearby but are on
+    transitively connected grids, this will forward to `geodesic_distance`.
+    If the two points are entirely disjoint, this will return `None`.
+    """
+    if p1.grid is p2.grid:
+      return p1.grid.local_distance(p1, p2)
+
+    common_grid_type = cls.common_grid_type(p1, p2)
+
+    distance = common_grid_type.nearby_grid_distance(p1, p2)
+    if distance is not None:
+      return distance
+
+    return common_grid_type.geodesic_distance(p1, p2)
+
+  @classmethod
+  def local_distance(
+      cls, p1: IsometricPoint, p2: IsometricPoint) -> Number | None:
+    if p1.grid is not p2.grid:
+      return None
+    b_component = p2.b - p1.b
+    s_component = p2.s - p1.s
+    return isometric_distance(
+        b_component - 0.5 * s_component,
+        s_component - 0.5 * b_component,
+    )
+
+  @classmethod
+  @abc.abstractmethod
+  def nearby_grid_distance(
+      cls, p1: IsometricPoint, p2: IsometricPoint) -> Number | None:
+    """Distance between two points on adjacent/nearby grids.
+
+    The notion of adjacency or proximity depends on the implementation and may
+    or may not apply. If it doesn't apply, this function should return None.
+    """
+    raise NotImplementedError()
+
+  @classmethod
+  @abc.abstractmethod
+  def geodesic_distance(
+      cls, p1: IsometricPoint, p2: IsometricPoint) -> Number | None:
+    """Distance between two points along a geodesic through N connected grids.
+
+    If the notion of connected grids doesn't apply to a given implementation,
+    this function should return None.
+    """
+    raise NotImplementedError()
+
+  @classmethod
+  def common_grid_type(
+      cls,
+      *points: Iterable[IsometricPoint],
+  ) -> type[IsometricGrid]:
+    if not points:
+      raise ValueError("No points provided.")
+
+    classes = tuple(point.grid_type for point in points)
+    cls_0 = classes[0]
+
+    if all(c is cls_0 for c in classes[1:]):
+      return cls_0
+
+    common_bases = set.intersection(*(set(c.mro()) for c in classes[1:]))
+
+    for base_class in cls_0.mro():
+      if base_class in common_bases:
+        return base_class
+
+    raise TypeError(
+        "Error: No common grid type between IsometricPoints. (At worst, any N "
+        "IsometricGrids should all share the 'IsometricGrid' abstract type.)"
+    )
+
+  @classmethod
+  def common_grid(cls, *points: Iterable[IsometricPoint]) -> IsometricGrid | None:
+    if not points:
+      return None
+
+    common_grid = points[0].grid
+
+    if all(point.grid is common_grid for point in points[1:]):
+      return common_grid
+
+    return None
 
 
 class IsometricPoint(HashByIndex):
   def __init__(self, grid: IsometricGrid, b: Number, s: Number):
-    self._grid = grid
-    self._b = b
-    self._s = s
+    self._grid: IsometricGrid = grid
+    self._b: Number = b
+    self._s: Number = s
 
   @classmethod
-  def center(cls, grid: IsometricGrid) -> "IsometricPoint":
+  def center(cls, grid: IsometricGrid) -> Self:
     return cls(grid, grid.apothem, grid.apothem)
 
   @classmethod
   def at_coordinates(
       cls,
       grid: IsometricGrid,
-      b: Optional[Number] = None,
-      s: Optional[Number] = None,
-      d: Optional[Number] = None
-  ) -> "IsometricPoint":
+      b: Number | None = None,
+      s: Number | None = None,
+      d: Number | None = None,
+  ) -> Self:
     new_point = cls(grid, 0, 0)
     new_point.move_to(b, s, d)
     return new_point
 
-  def project_onto_adjacent_grid(self, adjacent_grid) -> "IsometricPoint":
+  @classmethod
+  def from_barycentric(
+      cls,
+      grid: IsometricGrid,
+      wb: Number,
+      ws: Number,
+      wd: Number | None = None,
+  ) -> Self:
+    """Creates an IsometricPoint from barycentric coordinates (wb, ws, wd)."""
+    alt = grid.altitude
+    return cls(grid, wb * alt, ws * alt)
+
+  @property
+  def barycentric(self) -> tuple[Number, Number, Number]:
+    """Returns normalized (wb, ws, wd) barycentric coordinates."""
+    alt = self.grid.altitude
+    return (self.b / alt, self.s / alt, self.d / alt)
+
+  def project_onto_adjacent_grid(self, adjacent_grid) -> Self:
     """
     Initialize as a projection of point `other` onto `grid`. In order to be
     well defined, this requires that `other.grid` and `grid` share an edge.
@@ -98,30 +220,10 @@ class IsometricPoint(HashByIndex):
       projected_point._b -= altitude_mean
     elif new_border_edge == IsometricDirection.S:
       projected_point._s -= altitude_mean
-    # print()
-    # print(self.b / self.grid.apothem, projected_point.b / self.grid.apothem)
-    # print(self.s / self.grid.apothem, projected_point.s / self.grid.apothem)
-    # print(self.d / self.grid.apothem, projected_point.d / self.grid.apothem)
-    # print()
     return projected_point
 
-  def distance_from(self, other: "IsometricPoint") -> Number:
-    if self.grid is other.grid:
-      b_component = other.b - self.b
-      s_component = other.s - self.s
-      return isometric_distance(
-          b_component - 0.5 * s_component,
-          s_component - 0.5 * b_component)
-    elif self.grid.is_adjacent_to_face(other.grid):
-      return self.project_onto_adjacent_grid(other.grid).distance_from(
-          other)
-    else:
-      return geodesic_distance_from(other)
-
-  def geodesic_distance_from(self, other: "IsometricPoint") -> Number:
-    return NotImplementedError(
-        "The general case of this function has not yet been " +
-        "implemented.")
+  def distance_from(self, other: IsometricPoint) -> Number:
+    return self.grid.distance(self, other)
 
   def __repr__(self) -> str:
     return f"<id {hash(self)}: {str(self)} in grid {repr(self.grid)}>"
@@ -149,16 +251,16 @@ class IsometricPoint(HashByIndex):
     else:
       raise ValueError(f"{key} is not a valid IsometricDirection.")
 
-  def __add__(self, other: "IsometricVector") -> "IsometricPoint":
+  def __add__(self, other: IsometricVector) -> IsometricPoint:
     assert type(other) is IsometricVector, "Invalid __add__() operand."
     return IsometricPoint(
         self.grid, self.b + other.delta_b,
         self.s + other.delta_s)
 
-  def _sub_point(self, other: "IsometricPoint") -> "IsometricVector":
+  def _sub_point(self, other: IsometricPoint) -> IsometricVector:
     return IsometricVector.with_net_b_s(self.b - other.b, self.s - other.s)
 
-  def _sub_vector(self, other: "IsometricVector") -> "IsometricPoint":
+  def _sub_vector(self, other: IsometricVector) -> IsometricPoint:
     return IsometricPoint(
         self.grid, self.b - other.delta_b,
         self.s - other.delta_s)
@@ -212,6 +314,10 @@ class IsometricPoint(HashByIndex):
     return self._grid
 
   @property
+  def grid_type(self) -> type:
+    return type(self._grid)
+
+  @property
   def b(self) -> Number:
     return self._b
 
@@ -248,25 +354,25 @@ class IsometricVector:
     self._length_dirty = True
 
   @classmethod
-  def with_net_b_s(self, delta_b: Number, delta_s: Number):
+  def with_net_b_s(cls, delta_b: Number, delta_s: Number):
     return IsometricVector(delta_b - 0.5 * delta_s, delta_s - 0.5 * delta_b)
 
   @classmethod
-  def with_net_b_d(self, delta_b: Number, delta_d: Number):
+  def with_net_b_d(cls, delta_b: Number, delta_d: Number):
     return IsometricVector(
         delta_b - 0.5 * delta_d, -0.5 * (delta_b + delta_d))
 
   @classmethod
-  def with_net_s_d(self, delta_s: Number, delta_d: Number):
+  def with_net_s_d(cls, delta_s: Number, delta_d: Number):
     return IsometricVector(
         -0.5 * (delta_s + delta_d), delta_s - 0.5 * delta_d)
 
   @classmethod
-  def between_points(cls, start: IsometricPoint, end: IsometricPoint
-  ) -> "IsometricVector":
+  def between_points(
+      cls, start: IsometricPoint, end: IsometricPoint) -> IsometricVector:
     return end._sub_point(start)
 
-  def unit_vector(self) -> "IsometricVector":
+  def unit_vector(self) -> IsometricVector:
     return IsometricVector(
         self.b_component / self.length, self.s_component / self.length)
 
@@ -386,20 +492,20 @@ class IsometricVector:
     else:
       raise ValueError(f"{key} is not a valid IsometricDirection.")
 
-  def __add__(self, other: "IsometricVector") -> "IsometricVector":
+  def __add__(self, other: IsometricVector) -> IsometricVector:
     return IsometricVector(
         self._b_component + other.b_component,
         self._s_component + other.s_component)
 
-  def __sub__(self, other: "IsometricVector") -> "IsometricVector":
+  def __sub__(self, other: IsometricVector) -> IsometricVector:
     return IsometricVector(
         self._b_component - other.b_component,
         self._s_component - other.s_component)
 
-  def __mul__(self, scalar: Number) -> "IsometricVector":
+  def __mul__(self, scalar: Number) -> IsometricVector:
     return IsometricVector(
         self._b_component * scalar, self._s_component * scalar)
 
-  def __truediv__(self, scalar: Number) -> "IsometricVector":
+  def __truediv__(self, scalar: Number) -> IsometricVector:
     return IsometricVector(
         self._b_component / scalar, self._s_component / scalar)
