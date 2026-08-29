@@ -120,6 +120,14 @@ class IsometricGrid(abc.ABC):
     """
     raise NotImplementedError()
 
+  def project_onto_root_grid(self, point: IsometricPoint):
+    """Project `point` onto the root grid if this grid is a `NestedIsoGrid`.
+
+    Otherwise, simply return `point` since this grid doesn't have a parent and
+    is thus a root grid by default.
+    """
+    return point
+
   @classmethod
   def common_grid_type(
       cls,
@@ -222,6 +230,14 @@ class IsometricPoint(HashByIndex):
       projected_point._s -= altitude_mean
     return projected_point
 
+  def project_onto_root_grid(self) -> Self:
+    """Project `self` onto the root grid if `self.grid` is a `NestedIsoGrid`.
+
+    Otherwise, simply return `self` since the local grid doesn't have a parent
+    and is thus a root grid by default.
+    """
+    return self.grid.project_onto_root_grid(self)
+
   def distance_from(self, other: IsometricPoint) -> Number:
     return self.grid.distance(self, other)
 
@@ -275,9 +291,9 @@ class IsometricPoint(HashByIndex):
 
   def move_to(
       self,
-      b: Optional[Number] = None,
-      s: Optional[Number] = None,
-      d: Optional[Number] = None
+      b: Number | None = None,
+      s: Number | None = None,
+      d: Number | None = None,
   ) -> None:
     assert argc(b, s, d) == 2, \
         "move_to() must be provided exactly two of (b,s,d)."
@@ -314,7 +330,7 @@ class IsometricPoint(HashByIndex):
     return self._grid
 
   @property
-  def grid_type(self) -> type:
+  def grid_type(self) -> type[IsometricGrid]:
     return type(self._grid)
 
   @property

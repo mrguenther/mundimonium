@@ -230,8 +230,8 @@ class TessellationFace(HashByIndex, IsometricGrid):
       cls, p1: IsometricPoint, p2: IsometricPoint) -> Number | None:
     grid_1 = p1.grid
     grid_2 = p2.grid
-    assert isinstance(grid_1, cls)
-    assert isinstance(grid_2, cls)
+    if not isinstance(grid_1, cls) or not isinstance(grid_2, cls):
+      return None
 
     if grid_1.is_adjacent_to_face(grid_2):
       return p1.project_onto_adjacent_grid(grid_2).distance_from(p2)
