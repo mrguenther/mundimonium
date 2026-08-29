@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mundimonium.layers.coordinates.isometric import (
+from mundimonium.coordinates.isometric import (
     IsometricGrid, IsometricPoint,
 )
 from mundimonium.utils import classproperty

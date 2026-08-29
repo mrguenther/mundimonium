@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from mundimonium.layers.coordinates.tessellation import (
+from mundimonium.coordinates.tessellation import (
     Tessellation, TessellationFace, TessellationVertex
 )
-from mundimonium.layers.coordinates.isometric import (
+from mundimonium.coordinates.isometric import (
     IsometricDirection, IsometricPoint, isometric_distance
 )
 
