@@ -20,8 +20,19 @@ class Tessellation(abc.ABC):
   Abstract base class for equilateral triangular meshes.
   """
 
-  def __init__(self):
-    self._vertex_graph = dict()
+  def __init__(self,
+               *,
+               vertex_type: type[TessellationVertex] | None = None,
+               face_type: type[TessellationFace] | None = None):
+    if vertex_type is None:
+      vertex_type = TessellationVertex
+
+    if face_type is None:
+      face_type = TessellationFace
+
+    self._vertex_type: type[TessellationVertex] = vertex_type
+    self._face_type: type[TessellationFace] = face_type
+    self._vertex_graph: dict[TessellationVertex, list[TessellationVertex]] = {}
     self._vertices: list[TessellationVertex] = []
     self._faces: list[TessellationFace] = []
     self._vertex_index_map: dict[TessellationVertex, int] = {}
@@ -29,11 +40,11 @@ class Tessellation(abc.ABC):
 
   @property
   def vertex_type(self) -> type[TessellationVertex]:
-    return TessellationVertex
+    return self._vertex_type
 
   @property
   def face_type(self) -> type[TessellationFace]:
-    return TessellationFace
+    return self._face_type
 
   def _generate_tessellation(self) -> None:
     raise NotImplementedError()
@@ -63,6 +74,9 @@ class Tessellation(abc.ABC):
 
   def register_face(self, face: TessellationFace) -> int:
     """Registers an existing TessellationFace in this tessellation."""
+    if not face.isinstance(self.face_type):
+      raise TypeError("'face' is not an instance of type 'self.face_type'")
+
     if face not in self._face_index_map:
       idx = len(self._faces)
       self._faces.append(face)
@@ -147,8 +161,10 @@ class TessellationVertex(HashByIndex):
     return False
 
   def _is_adjacent_to_selector(self, arg_type: type):
-    return {TessellationFace: self.is_adjacent_to_face,
-        TessellationVertex: self.is_adjacent_to_vertex}[arg_type]
+    return {
+        TessellationFace: self.is_adjacent_to_face,
+        TessellationVertex: self.is_adjacent_to_vertex,
+    }[arg_type]
 
   def is_adjacent_to(self, other):
     return self._is_adjacent_to_selector(type(other))(other)
@@ -270,8 +286,10 @@ class TessellationFace(HashByIndex, IsometricGrid):
     return vertex in self._adjacent_vertices
 
   def _is_adjacent_to_selector(self, arg_type: type):
-    return {TessellationFace: self.is_adjacent_to_face,
-        TessellationVertex: self.is_adjacent_to_vertex}[arg_type]
+    return {
+        TessellationFace: self.is_adjacent_to_face,
+        TessellationVertex: self.is_adjacent_to_vertex,
+    }[arg_type]
 
   def is_adjacent_to(self, other):
     return self._is_adjacent_to_selector(type(other))(other)

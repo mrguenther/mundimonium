@@ -3,6 +3,7 @@ from __future__ import annotations
 from mundimonium.layers.coordinates.isometric import (
     IsometricGrid, IsometricPoint,
 )
+from mundimonium.utils import classproperty
 
 from collections.abc import Generator
 from dataclasses import dataclass
@@ -118,6 +119,11 @@ class NestingIsoGrid(IsometricGrid):
     # Pre-create children if resolution is given
     if resolution is not None and resolution >= 1:
       self._init_children()
+
+  @classproperty
+  def child_type(cls) -> type[NestingIsoGrid]:
+    # By default, a grid's children will be of the same type as the parent grid.
+    return cls
 
   # ==================================================================
   # IsometricGrid abstract property implementations
@@ -462,13 +468,13 @@ class NestingIsoGrid(IsometricGrid):
     for i_b in range(N):
       for i_s in range(N - i_b):
         # Upward child
-        self._children.append(NestingIsoGrid(
+        self._children.append(self.child_type(
             altitude=h_sub,
             _parent=self, _i_b=i_b, _i_s=i_s, _inverted=False,
         ))
         # Downward child (exists when there is a next column)
         if i_s < N - 1 - i_b:
-          self._children.append(NestingIsoGrid(
+          self._children.append(self.child_type(
               altitude=h_sub,
               _parent=self, _i_b=i_b, _i_s=i_s, _inverted=True,
           ))

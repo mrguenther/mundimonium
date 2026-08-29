@@ -19,8 +19,11 @@ class GenericTessellation(Tessellation):
   queries powered by the Heat Method (Crane, Weischedel, Wardetzky).
   """
 
-  def __init__(self):
-    super().__init__()
+  def __init__(self,
+               *,
+               vertex_type: type[TessellationVertex] | None = None,
+               face_type: type[TessellationFace] | None = None):
+    super().__init__(vertex_type=vertex_type, face_type=face_type)
     self._matrices_built: bool = False
     self._heat_solver = None
     self._poisson_solver = None
