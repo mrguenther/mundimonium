@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from mundimonium.layers.coordinates.exceptions import NotAdjacentException
-from mundimonium.layers.coordinates.hash_by_index import HashByIndex
-from mundimonium.layers.coordinates.isometric import (
+from mundimonium.coordinates.exceptions import NotAdjacentException
+from mundimonium.coordinates.hash_by_index import HashByIndex
+from mundimonium.coordinates.isometric import (
     IsometricDirection, IsometricGrid, IsometricPoint, IsometricVector,
     isometric_distance
 )

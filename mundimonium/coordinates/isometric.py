@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from mundimonium.layers.coordinates.exceptions import NotAdjacentException
-from mundimonium.layers.coordinates.hash_by_index import HashByIndex
+from mundimonium.coordinates.exceptions import NotAdjacentException
+from mundimonium.coordinates.hash_by_index import HashByIndex
 from mundimonium.utils.helper_functions import argc
 
 from collections.abc import Iterable

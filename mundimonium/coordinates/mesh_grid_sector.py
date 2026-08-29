@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from mundimonium.layers.coordinates.tessellation import (
+from mundimonium.coordinates.tessellation import (
     Tessellation, TessellationFace, TessellationVertex
 )
-from mundimonium.layers.coordinates.isometric import (
+from mundimonium.coordinates.isometric import (
     IsometricPoint
 )
-from mundimonium.layers.coordinates.nesting_iso_grid import (
+from mundimonium.coordinates.nesting_iso_grid import (
     NestingIsoGrid
 )
 from mundimonium.utils import classproperty
