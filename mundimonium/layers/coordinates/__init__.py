@@ -10,6 +10,5 @@ from mundimonium.layers.coordinates.spherical_tessellation import (
     SphericalTessellation, build_geodesic_sphere
 )
 from mundimonium.layers.coordinates.nesting_iso_grid import (
-    NestingIsoGrid, IsoGridSector, IsoGridSectorTable,
-    SectorItem, RenderItem, isometric_to_cartesian
+    NestingIsoGrid, SectorItem, RenderItem, isometric_to_cartesian
 )
