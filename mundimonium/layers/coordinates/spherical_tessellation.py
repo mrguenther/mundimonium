@@ -22,9 +22,11 @@ class SphericalTessellation(Tessellation):
       radius: float = 1.0,
       frequency: int | None = None,
       subdivisions: int | None = None,
-      center: tuple[float, float, float] = (0.0, 0.0, 0.0)
-  ):
-    super().__init__()
+      center: tuple[float, float, float] = (0.0, 0.0, 0.0),
+      *,
+      vertex_type: type[TessellationVertex] | None = None,
+      face_type: type[TessellationFace] | None = None):
+    super().__init__(vertex_type=vertex_type, face_type=face_type)
     self.radius = float(radius)
     self.center = tuple(float(c) for c in center)
 
