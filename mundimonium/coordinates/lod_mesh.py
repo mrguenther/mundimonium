@@ -47,6 +47,11 @@ class LodMeshSector(NestingIsoGrid):
         p2.project_onto_root_grid(),
     )
 
+  @override
+  def to_world_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
+    return self.root.tessellation.coords_at_point(
+        self.project_onto_root_grid(point))
+
 
 class LodMeshFace(LodMeshSector, TessellationFace):
   @classproperty
@@ -57,4 +62,8 @@ class LodMeshFace(LodMeshSector, TessellationFace):
     # must contain child sectors of type `LodMeshSector` rather than the default
     # child-sector type of `cls` (which would evaluate to `LodMeshFace`).
     return LodMeshSector
+
+  @override
+  def to_world_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
+    return self.tessellation.coords_at_point(point)
 

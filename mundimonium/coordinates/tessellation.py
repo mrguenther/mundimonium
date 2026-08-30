@@ -71,8 +71,9 @@ class Tessellation(abc.ABC):
     return self._face_type
 
   @abc.abstractmethod
-  def get_point_at_coords(self, *coords: list[Number]) -> IsometricPoint | None:
-    """Returns a new IsometricPoint at the specified coordinates.
+  def new_point_at_coords(
+      self, *coords: tuple[Number, ...]) -> IsometricPoint | None:
+    """Returns a new `IsometricPoint` at the specified coordinates.
 
     The coordinate system (including `len(coords)`) is implementation-defined.
     """
@@ -80,11 +81,15 @@ class Tessellation(abc.ABC):
 
   @abc.abstractmethod
   def get_face_at_coords(
-      self, *coords: list[Number]) -> TessellationFace | None:
-    """Returns a new `self.face_type` at the specified coordinates.
+      self, *coords: tuple[Number, ...]) -> TessellationFace | None:
+    """Returns the face containing the specified coordinates.
 
     The coordinate system (including `len(coords)`) is implementation-defined.
     """
+    raise NotImplementedError()
+
+  @abc.abstractmethod
+  def coords_at_point(self, point: IsometricPoint) -> tuple[Number, ...]:
     raise NotImplementedError()
 
   def _generate_tessellation(self) -> None:
@@ -307,6 +312,10 @@ class TessellationFace(HashByIndex, IsometricGrid):
   def geodesic_distance(cls, p1: IsometricPoint, p2: IsometricPoint) -> Number:
     return p1.grid.tessellation.geodesic_distance(p1, p2)
 
+  @override
+  def to_world_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
+    return self.tessellation.coords_at_point(point)
+
   @property
   def tessellation(self) -> Tessellation | None:
     return self._tessellation
@@ -498,7 +507,7 @@ if __name__ == '__main__':
   print("b:", pt_b)
   print("c:", pt_c)
   print()
-  print("Vectors <Δb,Δs,Δd> within grid:")
+  print("Vectors <db,ds,dd> within grid:")
   assert((pt_a - pt_b).length == pt_a.distance_from(pt_b))
   assert((pt_b - pt_a).length == pt_b.distance_from(pt_a))
   assert((pt_a - pt_c).length == pt_a.distance_from(pt_c))

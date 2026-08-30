@@ -30,14 +30,19 @@ class GenericTessellation(Tessellation):
     self._poisson_solver = None
 
   @override
-  def get_point_at_coords(self, *coords: list[Number]) -> IsometricPoint | None:
-    """Returns a new IsometricPoint at the specified coordinates."""
+  def new_point_at_coords(
+      self, *coords: tuple[Number, ...]) -> IsometricPoint | None:
+    """Returns a new `IsometricPoint` at the specified coordinates."""
     raise NotImplementedError()
 
   @override
   def get_face_at_coords(
-      self, *coords: list[Number]) -> TessellationFace | None:
-    """Returns a new `self.face_type` at the specified coordinates."""
+      self, *coords: tuple[Number, ...]) -> TessellationFace | None:
+    """Returns the face containing the specified coordinates."""
+    raise NotImplementedError()
+
+  @override
+  def coords_at_point(self, point: IsometricPoint) -> tuple[Number, ...]:
     raise NotImplementedError()
 
   @override

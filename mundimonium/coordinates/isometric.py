@@ -128,6 +128,9 @@ class IsometricGrid(abc.ABC):
     """
     return point
 
+  def to_world_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
+    raise NotImplementedError()
+
   @classmethod
   def common_grid_type(
       cls,
@@ -237,6 +240,9 @@ class IsometricPoint(HashByIndex):
     and is thus a root grid by default.
     """
     return self.grid.project_onto_root_grid(self)
+
+  def to_world_coordinates(self) -> tuple[Number, ...]:
+    return self.grid.to_world_coordinates(self)
 
   def distance_from(self, other: IsometricPoint) -> Number:
     return self.grid.distance(self, other)
