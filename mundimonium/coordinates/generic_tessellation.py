@@ -7,6 +7,7 @@ from mundimonium.coordinates.isometric import (
     IsometricDirection, IsometricPoint, isometric_distance
 )
 
+from numbers import Number
 from typing import override
 import numpy as np
 import scipy.sparse as sp
@@ -27,6 +28,17 @@ class GenericTessellation(Tessellation):
     self._matrices_built: bool = False
     self._heat_solver = None
     self._poisson_solver = None
+
+  @override
+  def get_point_at_coords(self, *coords: list[Number]) -> IsometricPoint | None:
+    """Returns a new IsometricPoint at the specified coordinates."""
+    raise NotImplementedError()
+
+  @override
+  def get_face_at_coords(
+      self, *coords: list[Number]) -> TessellationFace | None:
+    """Returns a new `self.face_type` at the specified coordinates."""
+    raise NotImplementedError()
 
   @override
   def invalidate_solvers(self) -> None:

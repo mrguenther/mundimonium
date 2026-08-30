@@ -87,14 +87,15 @@ class NestingIsoGrid(IsometricGrid):
 
   def __init__(
       self,
+      *,
       resolution: int | None = None,
       altitude: float = 1.0,
-      *,
       _parent: NestingIsoGrid | None = None,
       _i_b: int = 0,
       _i_s: int = 0,
       _inverted: bool = False,
-  ):
+      **kwargs):
+    super().__init__(**kwargs)
     self._resolution = resolution
     self._altitude = float(altitude)
     self._side_length = 2.0 * self._altitude / _SQRT3
