@@ -12,9 +12,7 @@ import numpy as np
 
 class SphericalTessellation(Tessellation):
   """
-  Specialized Tessellation for meshes projected onto a sphere S^2.
-  Overrides distance and path queries with exact O(1) Great-Circle / Haversine
-  calculations and Slerp paths.
+  Geodesic sphere tessellation.
   """
 
   def __init__(
@@ -23,19 +21,34 @@ class SphericalTessellation(Tessellation):
       frequency: int | None = None,
       subdivisions: int | None = None,
       center: tuple[float, float, float] = (0.0, 0.0, 0.0),
-      *,
-      vertex_type: type[TessellationVertex] | None = None,
-      face_type: type[TessellationFace] | None = None):
-    super().__init__(vertex_type=vertex_type, face_type=face_type)
+      **kwargs):
+    """Constructs a spherical mesh.
+
+    Exactly one of the arguments ('frequency', 'subdivisions') must be provided.
+
+    Args:
+      radius:       Radius of the sphere.
+      frequency:    Class I subdivision frequency nu >= 1 (1 = base icosahedron,
+                    2 = 80 faces, 3 = 180 faces, etc.).
+      subdivisions: Power-of-two subdivision level (k -> frequency = 2^k).
+      center:       3D (x, y, z) rectangular coordinates of the sphere center.
+      **kwargs:     Forwarded up the method resolution order.
+    """
+    super().__init__(**kwargs)
     self.radius = float(radius)
     self.center = tuple(float(c) for c in center)
 
-    effective_freq = frequency
-    if effective_freq is None and subdivisions is not None:
+    if (frequency is None) == (subdivisions is None):
+      raise ValueError(
+          "Exactly one of the arguments ('frequency', 'subdivisions') must be "
+          "provided."
+      )
+    elif frequency is not None:
+      effective_freq = frequency
+    else:  # subdivisions is not None
       effective_freq = 2 ** subdivisions
 
-    if effective_freq is not None:
-      self._generate_tessellation(frequency=effective_freq, center=self.center)
+    self._generate_tessellation(frequency=effective_freq, center=self.center)
 
   def _spherical_to_3d(
       self, colatitude: float, longitude: float,
@@ -43,12 +56,11 @@ class SphericalTessellation(Tessellation):
     """Convert spherical coordinates to a 3D position vector.
 
     Args:
-        colatitude: Polar angle from +Z axis, in radians [0, pi].
-        longitude:  Azimuthal angle from +X axis toward +Y, in radians [0, 2*pi).
+      colatitude: Polar angle from +Z axis in radians [0, pi].
+      longitude:  Azimuthal angle from +X axis toward +Y in radians [0, 2*pi).
 
     Returns:
-        Vector (x, y, z) of length ``self.radius``, relative to the
-        sphere's center.
+      Vector (x, y, z) of length `self.radius` relative to the sphere's center.
     """
     sin_colatitude = math.sin(colatitude)
     return self.radius * np.array([
@@ -64,16 +76,15 @@ class SphericalTessellation(Tessellation):
     """Find the face containing a direction from the sphere's center, in O(1).
 
     Exploits face-transitivity of the icosahedron: every face plane is
-    equidistant from the center, so the face a ray exits through is the one
-    whose centroid direction has the largest dot product with the ray
-    (a fixed 20-way argmax). The specific sub-face within that base face is
-    then found by inverting the affine grid parameterization used when the
-    mesh was generated (see ``_spatial_index`` in ``_generate_tessellation``) --
-    closed-form arithmetic, no iteration over sub-faces.
+    equidistant from the center, so the face plane through which a ray exits
+    through is the one whose centroid direction has the largest dot product with
+    the ray (a 20-way argmax). The specific sub-face within that face plane is
+    then found by inverting the affine grid parameterization used when the mesh
+    was generated.
 
     Returns:
-        The containing TessellationFace and the barycentric weights
-        (wb, ws, wd) of ``direction`` within it.
+      The containing TessellationFace and the barycentric weights (wb, ws, wd)
+      of `direction` within it.
     """
     unit_dir = direction / self.radius
 
@@ -153,14 +164,14 @@ class SphericalTessellation(Tessellation):
   @override
   def new_point_at_coords(
       self, *coords: tuple[float, float]) -> IsometricPoint | None:
-    """Return an IsometricPoint at the given spherical coordinates.
+    """Returns an IsometricPoint at the given spherical coordinates.
 
     Args:
-        colatitude: Polar angle from +Z axis, in radians [0, pi].
-        longitude:  Azimuthal angle from +X axis toward +Y, in radians [0, 2*pi).
+      colatitude: Polar angle from +Z axis in radians [0, pi].
+      longitude:  Azimuthal angle from +X axis toward +Y in radians [0, 2*pi).
 
     Returns:
-        An IsometricPoint on the containing face.
+      An IsometricPoint on the containing face.
     """
     colatitude, longitude = coords
     direction = self._spherical_to_3d(colatitude, longitude)
@@ -170,14 +181,14 @@ class SphericalTessellation(Tessellation):
   @override
   def get_face_at_coords(
       self, *coords: tuple[float, float]) -> TessellationFace | None:
-    """Return the face containing the given spherical coordinates.
+    """Returns the face containing the given spherical coordinates.
 
     Args:
-        colatitude: Polar angle from +Z axis, in radians [0, pi].
-        longitude:  Azimuthal angle from +X axis toward +Y, in radians [0, 2*pi).
+      colatitude: Polar angle from +Z axis in radians [0, pi].
+      longitude:  Azimuthal angle from +X axis toward +Y in radians [0, 2*pi).
 
     Returns:
-        The TessellationFace containing the point.
+      The TessellationFace containing the point.
     """
     colatitude, longitude = coords
     direction = self._spherical_to_3d(colatitude, longitude)
@@ -186,13 +197,13 @@ class SphericalTessellation(Tessellation):
 
   @override
   def coords_at_point(self, point: IsometricPoint) -> tuple[float, float]:
-    """Return the (colatitude, longitude) spherical coordinates of an IsometricPoint.
+    """Returns the spherical coordinates `(colatitude, longitude)` of `point`.
 
-    Inverse of ``new_point_at_coords``.
+    Inverse of `new_point_at_coords`.
 
     Returns:
-        colatitude: Polar angle from +Z axis, in radians [0, pi].
-        longitude:  Azimuthal angle from +X axis toward +Y, in radians [0, 2*pi).
+      colatitude: Polar angle from +Z axis in radians [0, pi].
+      longitude:  Azimuthal angle from +X axis toward +Y in radians [0, 2*pi).
     """
     x, y, z = self._point_to_3d_unit(point)
     colatitude = math.acos(np.clip(z, -1.0, 1.0))
@@ -207,8 +218,6 @@ class SphericalTessellation(Tessellation):
   ) -> None:
     """
     Populates this tessellation as a Class I geodesic sphere of given frequency.
-    Populates the 3D rectangular spatial coordinates of each vertex into its
-    projection_coordinates.
     """
     if frequency < 1:
       raise ValueError(f"Frequency must be an integer >= 1, got {frequency}.")
@@ -238,6 +247,7 @@ class SphericalTessellation(Tessellation):
     vertex_map: dict[tuple[float, float, float], TessellationVertex] = {}
 
     def get_or_create_vertex(pos_unit: np.ndarray) -> TessellationVertex:
+      """Projects `pos_unit` onto the sphere and returns its (shared) vertex."""
       norm = np.linalg.norm(pos_unit)
       p_sphere = pos_unit / norm if norm > 1e-12 else pos_unit
 
@@ -319,29 +329,9 @@ class SphericalTessellation(Tessellation):
 
     self._base_face_normals = np.array(base_face_normals, dtype=np.float64)
 
-  @classmethod
-  def create_geodesic_sphere(
-      cls,
-      radius: float = 1.0,
-      frequency: int | None = None,
-      subdivisions: int | None = None,
-      center: tuple[float, float, float] = (0.0, 0.0, 0.0)
-  ) -> Self:
-    """
-    Factory constructor to build and return a fully populated SphericalTessellation
-    geodesic sphere.
-    """
-    if frequency is None and subdivisions is None:
-      frequency = 1
-    return cls(
-        radius=radius,
-        frequency=frequency,
-        subdivisions=subdivisions,
-        center=center
-    )
-
   def _point_to_3d_unit(self, pt: IsometricPoint) -> np.ndarray:
-    """Maps an IsometricPoint to a unit direction vector from the sphere's center."""
+    """Returns a unit vector pointing from the sphere's center toward `point`.
+    """
     face = pt.grid
     wb, ws, wd = pt.barycentric
     v_b, v_s, v_d = face.vertex_b, face.vertex_s, face.vertex_d
@@ -361,7 +351,7 @@ class SphericalTessellation(Tessellation):
 
   @override
   def geodesic_distance(self, p1: IsometricPoint, p2: IsometricPoint) -> float:
-    """Computes exact O(1) Great-Circle distance between two points on the sphere."""
+    """Computes great-circle distance between two points on the sphere."""
     v1 = self._point_to_3d_unit(p1)
     v2 = self._point_to_3d_unit(p2)
     cos_theta = np.clip(np.dot(v1, v2), -1.0, 1.0)
@@ -375,7 +365,7 @@ class SphericalTessellation(Tessellation):
       num_samples: int = 20
   ) -> list[np.ndarray]:
     """
-    Returns 3D Euclidean points sampled along the great-circle arc on the sphere.
+    Returns 3D Euclidean points sampled along a great-circle arc of the sphere.
     """
     v1 = self._point_to_3d_unit(p1)
     v2 = self._point_to_3d_unit(p2)
@@ -389,34 +379,9 @@ class SphericalTessellation(Tessellation):
     sin_omega = np.sin(omega)
     path_3d = []
     for t in np.linspace(0.0, 1.0, num_samples):
-      p_dir = (np.sin((1.0 - t) * omega) / sin_omega) * v1 + (np.sin(t * omega) / sin_omega) * v2
+      p_dir = (
+          (np.sin((1.0 - t) * omega) / sin_omega) * v1 +
+          (np.sin(t * omega) / sin_omega) * v2
+      )
       path_3d.append(c + self.radius * p_dir)
     return path_3d
-
-
-def build_geodesic_sphere(
-    radius: float = 1.0,
-    frequency: int | None = None,
-    subdivisions: int | None = None,
-    center: tuple[float, float, float] = (0.0, 0.0, 0.0)
-) -> SphericalTessellation:
-  """
-  Builds a SphericalTessellation given standard parameters of a geodesic sphere,
-  populating the 3D rectangular spatial coordinates of each vertex into its
-  projection coordinates.
-
-  Parameters:
-    radius: Radius of the geodesic sphere.
-    frequency: Class I subdivision frequency nu >= 1 (1 = base icosahedron, 2 = 80 faces, 3 = 180 faces, etc.).
-    subdivisions: Optional power-of-two subdivision level (k -> frequency = 2^k).
-    center: 3D (x, y, z) rectangular coordinates of the sphere center.
-
-  Returns:
-    A fully populated SphericalTessellation instance.
-  """
-  return SphericalTessellation.create_geodesic_sphere(
-      radius=radius,
-      frequency=frequency,
-      subdivisions=subdivisions,
-      center=center
-  )

@@ -20,6 +20,7 @@ class LodMeshSector(NestingIsoGrid):
   @classmethod
   @override
   def nearby_grid_distance(cls, p1, p2):
+    """Distance between two points whose root grids share at least one edge."""
     grid_1 = p1.grid
     grid_2 = p2.grid
     if not isinstance(grid_1, cls) or not isinstance(grid_2, cls):
@@ -42,6 +43,7 @@ class LodMeshSector(NestingIsoGrid):
   @classmethod
   @override
   def geodesic_distance(cls, p1: IsometricPoint, p2: IsometricPoint) -> Number:
+    """Geodesic distance along the mesh containing `p1` and `p2`."""
     return p1.grid.root.tessellation.geodesic_distance(
         p1.project_onto_root_grid(),
         p2.project_onto_root_grid(),
@@ -49,21 +51,46 @@ class LodMeshSector(NestingIsoGrid):
 
   @override
   def to_world_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
+    """Converts a point on `self` to a tessellation-defined coordinate system.
+
+    The length of the returned coordinate vector is tessellation-defined, as is
+    the meaning of each individual coordinate in the vector.
+
+    For example, on a spherical world, this would return a 2-vector of spherical
+    coordinates `(colatitude, longitude)`, with the radial-distance coordinate
+    implicitly equal to the world's radius.
+    """
     return self.root.tessellation.coords_at_point(
         self.project_onto_root_grid(point))
 
 
 class LodMeshFace(LodMeshSector, TessellationFace):
+  """A top-level mesh face.
+
+  Both a `TessellationFace` and the root `LodMeshSector` of its own LOD tree."""
+
   @classproperty
   @override
   def child_type(cls) -> type[NestingIsoGrid]:
-    # A top-level `LodMeshFace` is also an `LodMeshSector`, but a nested
-    # `LodMeshSector` is *not* an `LodMeshFace`. Therefore, an `LodMeshFace`
-    # must contain child sectors of type `LodMeshSector` rather than the default
-    # child-sector type of `cls` (which would evaluate to `LodMeshFace`).
+    """Non-top-level sectors are plain `LodMeshSector`s, not `LodMeshFace`s.
+
+    A top-level `LodMeshFace` is also an `LodMeshSector`, but a nested
+    `LodMeshSector` is *not* an `LodMeshFace`. Therefore, an `LodMeshFace` must
+    contain child sectors of type `LodMeshSector` instead of the default
+    child-sector type `cls` (i.e. same as the parent-sector type).
+    """
     return LodMeshSector
 
   @override
   def to_world_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
+    """Converts a point on `self` to a tessellation-defined coordinate system.
+
+    The length of the returned coordinate vector is tessellation-defined, as is
+    the meaning of each individual coordinate in the vector.
+
+    For example, on a spherical world, this would return a 2-vector of spherical
+    coordinates `(colatitude, longitude)`, with the radial-distance coordinate
+    implicitly equal to the world's radius.
+    """
     return self.tessellation.coords_at_point(point)
 
