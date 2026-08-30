@@ -5,8 +5,9 @@ from mundimonium.coordinates.tessellation import (
 )
 from mundimonium.coordinates.isometric import IsometricPoint
 
-import math
+from numbers import Number
 from typing import Self, override
+import math
 import numpy as np
 
 
@@ -36,6 +37,19 @@ class SphericalTessellation(Tessellation):
 
     if effective_freq is not None:
       self._generate_tessellation(frequency=effective_freq, center=self.center)
+
+  @override
+  def get_point_at_coords(self, *coords: list[Number]) -> IsometricPoint | None:
+    """Returns a new IsometricPoint at the specified coordinates."""
+    theta, phi = coords
+    raise NotImplementedError()
+
+  @override
+  def get_face_at_coords(
+      self, *coords: list[Number]) -> TessellationFace | None:
+    """Returns a new `self.face_type` at the specified coordinates."""
+    theta, phi = coords
+    raise NotImplementedError()
 
   @override
   def _generate_tessellation(

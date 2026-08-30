@@ -11,14 +11,38 @@ import abc
 import itertools
 import math
 from numbers import Number
-from typing import override
+from typing import get_type_hints, override
 import numpy as np
+
+
+class _TessellationImplMetadata:
+  def __init__(self, impl: type[Tessellation]):
+    base = Tessellation
+    base_init_params = get_type_hints(base.__init__, include_extras=True)
+    impl_init_params = get_type_hints(impl.__init__, include_extras=True)
+    self._init_params = impl_init_params
+    for param, type_hint in base_init_params.items():
+      if param not in impl_init_params:
+        import pprint
+        raise AttributeError(
+            "A 'Tessellation' implementation must accept at least these "
+            "'__init__' keyword arguments:\n" + pprint.pformat(base_init_params)
+        )
+      # The user shouldn't actually pass the base Tessellation args, though.
+      del self._init_params[param]
+    self._init_params = impl_init_params
 
 
 class Tessellation(abc.ABC):
   """
   Abstract base class for equilateral triangular meshes.
   """
+
+  _impls: dict[type[Tessellation], _TessellationImplMetadata] = {}
+
+  def __init_subclass__(cls, **kwargs):
+    assert cls not in Tessellation._impls
+    Tessellation._impls[cls] = _TessellationImplMetadata(cls)
 
   def __init__(self,
                *,
@@ -45,6 +69,23 @@ class Tessellation(abc.ABC):
   @property
   def face_type(self) -> type[TessellationFace]:
     return self._face_type
+
+  @abc.abstractmethod
+  def get_point_at_coords(self, *coords: list[Number]) -> IsometricPoint | None:
+    """Returns a new IsometricPoint at the specified coordinates.
+
+    The coordinate system (including `len(coords)`) is implementation-defined.
+    """
+    raise NotImplementedError()
+
+  @abc.abstractmethod
+  def get_face_at_coords(
+      self, *coords: list[Number]) -> TessellationFace | None:
+    """Returns a new `self.face_type` at the specified coordinates.
+
+    The coordinate system (including `len(coords)`) is implementation-defined.
+    """
+    raise NotImplementedError()
 
   def _generate_tessellation(self) -> None:
     raise NotImplementedError()
@@ -74,7 +115,7 @@ class Tessellation(abc.ABC):
 
   def register_face(self, face: TessellationFace) -> int:
     """Registers an existing TessellationFace in this tessellation."""
-    if not face.isinstance(self.face_type):
+    if not isinstance(face, self.face_type):
       raise TypeError("'face' is not an instance of type 'self.face_type'")
 
     if face not in self._face_index_map:
@@ -98,7 +139,11 @@ class Tessellation(abc.ABC):
 
     assert len(bounding_vertices) == 3, (
         "A face must be bounded by exactly three vertices.")
-    new_face = self.face_type(*bounding_vertices)
+    new_face = self.face_type(
+        vertex_b=bounding_vertices[0],
+        vertex_s=bounding_vertices[1],
+        vertex_d=bounding_vertices[2],
+    )
     self.register_face(new_face)
     return new_face
 
@@ -222,9 +267,12 @@ class TessellationFace(HashByIndex, IsometricGrid):
 
   def __init__(
       self,
+      *,
       vertex_b: TessellationVertex,
       vertex_s: TessellationVertex,
-      vertex_d: TessellationVertex):
+      vertex_d: TessellationVertex,
+      **kwargs):
+    super().__init__(**kwargs)
     self._adjacent_faces = [None] * len(IsometricDirection)
     self._adjacent_vertices = [vertex_b, vertex_s, vertex_d]
     self._tessellation: Tessellation | None = None
