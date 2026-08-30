@@ -20,10 +20,14 @@ class GenericTessellation(Tessellation):
   queries powered by the Heat Method (Crane, Weischedel, Wardetzky).
   """
 
-  def __init__(self,
-               *,
-               vertex_type: type[TessellationVertex] | None = None,
-               face_type: type[TessellationFace] | None = None):
+  def __init__(self, **kwargs):
+    """Constructs an empty tessellation of arbitrary geometry.
+
+    Heat/Poisson solvers are built lazily on first use.
+
+    Args:
+      **kwargs: Forwarded up the method resolution order.
+    """
     super().__init__(vertex_type=vertex_type, face_type=face_type)
     self._matrices_built: bool = False
     self._heat_solver = None
@@ -43,9 +47,22 @@ class GenericTessellation(Tessellation):
 
   @override
   def coords_at_point(self, point: IsometricPoint) -> tuple[Number, ...]:
+    """Returns the coordinates of the specified point."""
     raise NotImplementedError()
 
   @override
+  def on_vertex_added(self, vertex: TessellationVertex) -> None:
+    """Hook for updating internal state when mesh topology changes."""
+    super().on_vertex_added(vertex)
+    self.invalidate_solvers()
+
+  @override
+  def on_face_added(self, face: TessellationFace) -> None:
+    """Hook for updating internal state when mesh topology changes."""
+    super().on_face_added(face)
+    self.invalidate_solvers()
+
+
   def invalidate_solvers(self) -> None:
     """Invalidates cached matrix factorizations when topology changes."""
     self._matrices_built = False
@@ -53,6 +70,11 @@ class GenericTessellation(Tessellation):
     self._poisson_solver = None
 
   def _build_solvers(self) -> None:
+    """Builds solvers for heat-based distance calculations.
+
+    Builds and factorizes the mass, cotangent-Laplacian, heat, and Poisson
+    matrices used by the Heat Method, caching the factorizations for reuse.
+    """
     if not self._faces:
       raise ValueError("Cannot build solvers on a Tessellation with no faces.")
 
@@ -92,9 +114,12 @@ class GenericTessellation(Tessellation):
     # e1 = p0 - p2 -> rotated 90 deg CW = (p0_y - p2_y, p2_x - p0_x)
     # e2 = p1 - p0 -> rotated 90 deg CW = (p1_y - p0_y, p0_x - p1_x)
     self._grad_coeffs = np.array([
-        [self._p_local[2, 1] - self._p_local[1, 1], self._p_local[1, 0] - self._p_local[2, 0]],
-        [self._p_local[0, 1] - self._p_local[2, 1], self._p_local[2, 0] - self._p_local[0, 0]],
-        [self._p_local[1, 1] - self._p_local[0, 1], self._p_local[0, 0] - self._p_local[1, 0]],
+        [self._p_local[2, 1] - self._p_local[1, 1],
+         self._p_local[1, 0] - self._p_local[2, 0]],
+        [self._p_local[0, 1] - self._p_local[2, 1],
+         self._p_local[2, 0] - self._p_local[0, 0]],
+        [self._p_local[1, 1] - self._p_local[0, 1],
+         self._p_local[0, 0] - self._p_local[1, 0]],
     ]) / (2.0 * self._face_area)
 
     # Sum of outgoing edges from each face vertex for divergence:
@@ -102,9 +127,12 @@ class GenericTessellation(Tessellation):
     # v1: (p0 - p1) + (p2 - p1)
     # v2: (p0 - p2) + (p1 - p2)
     self._div_vecs = np.array([
-        (self._p_local[1] - self._p_local[0]) + (self._p_local[2] - self._p_local[0]),
-        (self._p_local[0] - self._p_local[1]) + (self._p_local[2] - self._p_local[1]),
-        (self._p_local[0] - self._p_local[2]) + (self._p_local[1] - self._p_local[2]),
+        (self._p_local[1] - self._p_local[0]) +
+        (self._p_local[2] - self._p_local[0]),
+        (self._p_local[0] - self._p_local[1]) +
+        (self._p_local[2] - self._p_local[1]),
+        (self._p_local[0] - self._p_local[2]) +
+        (self._p_local[1] - self._p_local[2]),
     ])
 
     # 1. Lumped Diagonal Mass Matrix M
@@ -142,11 +170,21 @@ class GenericTessellation(Tessellation):
     self._poisson_solver = spla.factorized(poisson_op)
     self._matrices_built = True
 
-  def _barycentric_to_local_2d(self, bary: tuple[float, float, float]) -> np.ndarray:
+  def _barycentric_to_local_2d(
+      self, bary: tuple[float, float, float]) -> np.ndarray:
+    """Maps barycentric weights to a 2D position in the canonical face frame.
+
+    Inverse of `_local_2d_to_barycentric`.
+    """
     w0, w1, w2 = bary
     return w0 * self._p_local[0] + w1 * self._p_local[1] + w2 * self._p_local[2]
 
-  def _local_2d_to_barycentric(self, p: np.ndarray) -> tuple[float, float, float]:
+  def _local_2d_to_barycentric(
+      self, p: np.ndarray) -> tuple[float, float, float]:
+    """Maps a 2D position in the canonical face frame to barycentric weights.
+
+    Inverse of `_barycentric_to_local_2d`.
+    """
     x, y = p[0], p[1]
     h = (np.sqrt(3.0) / 2.0) * self._a
     w2 = y / h
@@ -214,9 +252,11 @@ class GenericTessellation(Tessellation):
     if p1.grid is p2.grid:
       b_comp = p2.b - p1.b
       s_comp = p2.s - p1.s
-      return float(isometric_distance(b_comp - 0.5 * s_comp, s_comp - 0.5 * b_comp))
+      return float(isometric_distance(b_comp - 0.5 * s_comp,
+                                      s_comp - 0.5 * b_comp))
 
-    if hasattr(p1.grid, "is_adjacent_to_face") and p1.grid.is_adjacent_to_face(p2.grid):
+    if (hasattr(p1.grid, "is_adjacent_to_face") and
+        p1.grid.is_adjacent_to_face(p2.grid)):
       return float(p1.project_onto_adjacent_grid(p2.grid).distance_from(p2))
 
     phi = self.compute_distance_field(p1)

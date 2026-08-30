@@ -7,7 +7,7 @@ from mundimonium.coordinates.tessellation import (
 )
 from mundimonium.coordinates.generic_tessellation import GenericTessellation
 from mundimonium.coordinates.spherical_tessellation import (
-    SphericalTessellation, build_geodesic_sphere
+    SphericalTessellation
 )
 from mundimonium.coordinates.nesting_iso_grid import (
     NestingIsoGrid, SectorItem, RenderItem, isometric_to_cartesian

@@ -4,6 +4,7 @@ import timeit
 from typing import List
 
 def entropy(data: List[int], nbits: int = 64):
+  """Shannon entropy, in bits, of each bit position across `data`."""
   data_len = len(data)
   return np.sum(np.fromiter(
     (-p * np.log2(p) if p > 0 else 0
@@ -26,6 +27,7 @@ benchmarks = [
 ]
 
 def main():
+  """Times each hashing benchmark and prints its output entropy alongside it."""
   setup = "from benchmarks import benchmarks"
   results = [None] * len(benchmarks)
   for i in range(len(benchmarks)):
