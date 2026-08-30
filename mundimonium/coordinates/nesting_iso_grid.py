@@ -56,7 +56,7 @@ class RenderItem:
 
 
 # ---------------------------------------------------------------------------
-# NestingIsoGrid — a recursive equilateral-triangle LOD node
+# NestingIsoGrid -- a recursive equilateral-triangle LOD node
 # ---------------------------------------------------------------------------
 
 class NestingIsoGrid(IsometricGrid):
@@ -66,7 +66,7 @@ class NestingIsoGrid(IsometricGrid):
 
   - Hold renderable items (with scale-dependent visibility).
   - Be subdivided into ``resolution**2`` child triangles, each of which
-    is itself a NestingIsoGrid — forming an arbitrarily deep LOD tree.
+    is itself a NestingIsoGrid -- forming an arbitrarily deep LOD tree.
   - Convert local isometric coordinates to root-level Cartesian or
     isometric coordinates in **O(1)** time, regardless of nesting depth.
 
@@ -77,7 +77,7 @@ class NestingIsoGrid(IsometricGrid):
       flat_index = i_b * (2*N - i_b) + 2*i_s + (1 if inverted else 0)
 
   Parameters:
-      resolution: Number of subdivisions per edge (N).  Produces N²
+      resolution: Number of subdivisions per edge (N).  Produces N^2
                   children.  ``None`` for a leaf with no children.
       altitude:   Height of this triangle in world units.
   """
@@ -306,7 +306,7 @@ class NestingIsoGrid(IsometricGrid):
     elif floor_sum == N - 2:
       inverted = True
     else:
-      # Floating-point edge case — fall back to upward triangle
+      # Floating-point edge case -- fall back to upward triangle
       inverted = False
       i_s = min(i_s, N - 1 - i_b)
 
@@ -462,7 +462,7 @@ class NestingIsoGrid(IsometricGrid):
   # ==================================================================
 
   def _init_children(self) -> None:
-    """Create N² child triangles."""
+    """Create N^2 child triangles."""
     N = self._resolution
     h_sub = self._altitude / N
     self._children = []
@@ -553,7 +553,7 @@ class NestingIsoGrid(IsometricGrid):
   # ==================================================================
 
   def __repr__(self) -> str:
-    kind = "\u25BD" if self._inverted else "\u25B3"
+    kind = "v" if self._inverted else "^"
     children_str = (f"{len(self._children)}"
                     if self._children else "none")
     return (
@@ -563,7 +563,7 @@ class NestingIsoGrid(IsometricGrid):
 
 
 # ---------------------------------------------------------------------------
-# Main — demo / smoke test
+# Main -- demo / smoke test
 # ---------------------------------------------------------------------------
 
 def main():
@@ -574,7 +574,7 @@ def main():
   print()
 
   for i, child in enumerate(grid._children):
-    kind = "\u25BD" if child.inverted else "\u25B3"
+    kind = "v" if child.inverted else "^"
     print(f"  [{i:>2d}] {kind} i_b={child.i_b}, i_s={child.i_s}, "
           f"i_d={child.i_d}")
 
@@ -624,7 +624,7 @@ def main():
   print(f"Grandchild to_root_cartesian: ({cx:.6f}, {cy:.6f})")
   print(f"Grandchild to_root_isometric: ({ex:.6f}, {ey:.6f})")
   assert abs(cx - ex) < 1e-12 and abs(cy - ey) < 1e-12, "Mismatch!"
-  print("O(1) cached transform matches recursive transform ✓")
+  print("O(1) cached transform matches recursive transform: OK")
 
   print()
   print("      p1 -> p2:      ", p1.distance_from(p2))

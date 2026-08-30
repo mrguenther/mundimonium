@@ -5,7 +5,6 @@ from mundimonium.coordinates.tessellation import (
 )
 from mundimonium.coordinates.isometric import IsometricPoint
 
-from numbers import Number
 from typing import Self, override
 import math
 import numpy as np
@@ -38,18 +37,167 @@ class SphericalTessellation(Tessellation):
     if effective_freq is not None:
       self._generate_tessellation(frequency=effective_freq, center=self.center)
 
+  def _spherical_to_3d(
+      self, colatitude: float, longitude: float,
+  ) -> np.ndarray:
+    """Convert spherical coordinates to a 3D position vector.
+
+    Args:
+        colatitude: Polar angle from +Z axis, in radians [0, pi].
+        longitude:  Azimuthal angle from +X axis toward +Y, in radians [0, 2*pi).
+
+    Returns:
+        Vector (x, y, z) of length ``self.radius``, relative to the
+        sphere's center.
+    """
+    sin_colatitude = math.sin(colatitude)
+    return self.radius * np.array([
+        sin_colatitude * math.cos(longitude),
+        sin_colatitude * math.sin(longitude),
+        math.cos(colatitude),
+    ], dtype=np.float64)
+
+  def _locate_face_and_barycentric(
+      self,
+      direction: np.ndarray,
+  ) -> tuple[TessellationFace, tuple[float, float, float]]:
+    """Find the face containing a direction from the sphere's center, in O(1).
+
+    Exploits face-transitivity of the icosahedron: every face plane is
+    equidistant from the center, so the face a ray exits through is the one
+    whose centroid direction has the largest dot product with the ray
+    (a fixed 20-way argmax). The specific sub-face within that base face is
+    then found by inverting the affine grid parameterization used when the
+    mesh was generated (see ``_spatial_index`` in ``_generate_tessellation``) --
+    closed-form arithmetic, no iteration over sub-faces.
+
+    Returns:
+        The containing TessellationFace and the barycentric weights
+        (wb, ws, wd) of ``direction`` within it.
+    """
+    unit_dir = direction / self.radius
+
+    base_idx = int(np.argmax(self._base_face_normals @ unit_dir))
+    (_, _, v0, e1, e2, face_n, plane_d,
+     d00, d01, d11, cramer_inv, subgrid) = self._spatial_index[base_idx]
+    frequency = self._frequency
+
+    # Gnomonic projection of the direction onto the base face's plane.
+    denom = np.dot(face_n, unit_dir)
+    if abs(denom) < 1e-15:
+      w1, w2 = 1 / 3, 1 / 3
+    else:
+      t = plane_d / denom
+      p = t * unit_dir - v0
+      d20 = np.dot(p, e1)
+      d21 = np.dot(p, e2)
+      w1 = (d11 * d20 - d01 * d21) * cramer_inv
+      w2 = (d00 * d21 - d01 * d20) * cramer_inv
+
+    # Invert the grid parameterization pos = (k*v0 + i*v1 + j*v2) / frequency
+    # to find the continuous (i, j) grid coordinates, then the sub-triangle.
+    i_f = w1 * frequency
+    j_f = w2 * frequency
+    i0 = min(max(int(math.floor(i_f)), 0), frequency - 1)
+    j0 = min(max(int(math.floor(j_f)), 0), frequency - 1 - i0)
+    fi = i_f - i0
+    fj = j_f - j0
+
+    is_downward = (fi + fj > 1.0) and (i0 + j0 < frequency - 1)
+    face = subgrid[(i0, j0, is_downward)]
+
+    # (fi, fj) only located the sub-triangle: subdivision vertices are
+    # renormalized onto the sphere (a nonlinear step), so they don't sit at
+    # the exact affine (fi, fj) split of the flat macro-face grid. Get exact
+    # weights by projecting directly onto this one face's actual plane --
+    # still O(1), since it's a single face rather than a search.
+    bary = self._barycentric_on_face(face, unit_dir)
+
+    return face, bary
+
+  def _barycentric_on_face(
+      self,
+      face: TessellationFace,
+      unit_dir: np.ndarray,
+  ) -> tuple[float, float, float]:
+    """Exact barycentric weights of a direction within a given face's plane."""
+    center = np.array(self.center, dtype=np.float64)
+    vb = np.array(face.vertex_b.projection_coordinates, dtype=np.float64) - center
+    vs = np.array(face.vertex_s.projection_coordinates, dtype=np.float64) - center
+    vd = np.array(face.vertex_d.projection_coordinates, dtype=np.float64) - center
+
+    e1 = vs - vb
+    e2 = vd - vb
+    face_normal = np.cross(e1, e2)
+
+    denom = np.dot(face_normal, unit_dir)
+    if abs(denom) < 1e-15:
+      return (1 / 3, 1 / 3, 1 / 3)
+
+    t = np.dot(face_normal, vb) / denom
+    p = t * unit_dir - vb
+
+    d00 = np.dot(e1, e1)
+    d01 = np.dot(e1, e2)
+    d11 = np.dot(e2, e2)
+    d20 = np.dot(p, e1)
+    d21 = np.dot(p, e2)
+
+    inv_denom = 1.0 / (d00 * d11 - d01 * d01)
+    ws = float((d11 * d20 - d01 * d21) * inv_denom)
+    wd = float((d00 * d21 - d01 * d20) * inv_denom)
+    wb = float(1.0 - ws - wd)
+
+    return (wb, ws, wd)
+
   @override
-  def get_point_at_coords(self, *coords: list[Number]) -> IsometricPoint | None:
-    """Returns a new IsometricPoint at the specified coordinates."""
-    theta, phi = coords
-    raise NotImplementedError()
+  def new_point_at_coords(
+      self, *coords: tuple[float, float]) -> IsometricPoint | None:
+    """Return an IsometricPoint at the given spherical coordinates.
+
+    Args:
+        colatitude: Polar angle from +Z axis, in radians [0, pi].
+        longitude:  Azimuthal angle from +X axis toward +Y, in radians [0, 2*pi).
+
+    Returns:
+        An IsometricPoint on the containing face.
+    """
+    colatitude, longitude = coords
+    direction = self._spherical_to_3d(colatitude, longitude)
+    face, (wb, ws, wd) = self._locate_face_and_barycentric(direction)
+    return IsometricPoint.from_barycentric(face, wb, ws, wd)
 
   @override
   def get_face_at_coords(
-      self, *coords: list[Number]) -> TessellationFace | None:
-    """Returns a new `self.face_type` at the specified coordinates."""
-    theta, phi = coords
-    raise NotImplementedError()
+      self, *coords: tuple[float, float]) -> TessellationFace | None:
+    """Return the face containing the given spherical coordinates.
+
+    Args:
+        colatitude: Polar angle from +Z axis, in radians [0, pi].
+        longitude:  Azimuthal angle from +X axis toward +Y, in radians [0, 2*pi).
+
+    Returns:
+        The TessellationFace containing the point.
+    """
+    colatitude, longitude = coords
+    direction = self._spherical_to_3d(colatitude, longitude)
+    face, _ = self._locate_face_and_barycentric(direction)
+    return face
+
+  @override
+  def coords_at_point(self, point: IsometricPoint) -> tuple[float, float]:
+    """Return the (colatitude, longitude) spherical coordinates of an IsometricPoint.
+
+    Inverse of ``new_point_at_coords``.
+
+    Returns:
+        colatitude: Polar angle from +Z axis, in radians [0, pi].
+        longitude:  Azimuthal angle from +X axis toward +Y, in radians [0, 2*pi).
+    """
+    x, y, z = self._point_to_3d_unit(point)
+    colatitude = math.acos(np.clip(z, -1.0, 1.0))
+    longitude = math.atan2(y, x) % (2.0 * math.pi)
+    return colatitude, longitude
 
   @override
   def _generate_tessellation(
@@ -106,11 +254,16 @@ class SphericalTessellation(Tessellation):
         vertex_map[key] = v
       return vertex_map[key]
 
-    # 2. Subdivide each of the 20 icosahedral faces
+    # 2. Subdivide each of the 20 icosahedral faces and build spatial index
+    self._frequency = frequency
+    self._spatial_index: list[tuple] = []
+    base_face_normals: list[np.ndarray] = []
+
     for v0_idx, v1_idx, v2_idx in base_faces:
       v0 = base_verts[v0_idx]
       v1 = base_verts[v1_idx]
       v2 = base_verts[v2_idx]
+      base_face_normals.append((v0 + v1 + v2) / np.linalg.norm(v0 + v1 + v2))
 
       # Grid of vertex points on this face: (i, j) where i + j <= frequency
       grid: dict[tuple[int, int], TessellationVertex] = {}
@@ -120,19 +273,51 @@ class SphericalTessellation(Tessellation):
           pos = (k * v0 + i * v1 + j * v2) / frequency
           grid[(i, j)] = get_or_create_vertex(pos)
 
-      # Triangulate the subgrid
+      # Triangulate the subgrid, recording face references
+      subgrid: dict[tuple[int, int, bool], TessellationFace] = {}
       for i in range(frequency):
         for j in range(frequency - i):
           # Upward-pointing triangle: (i, j) -> (i + 1, j) -> (i, j + 1)
           v_bl = grid[(i, j)]
           v_br = grid[(i + 1, j)]
           v_top = grid[(i, j + 1)]
-          self.add_face([v_bl, v_br, v_top])
+          subgrid[(i, j, False)] = self.add_face([v_bl, v_br, v_top])
 
           # Downward-pointing triangle: (i + 1, j) -> (i + 1, j + 1) -> (i, j + 1)
           if i + j + 1 < frequency:
             v_tr = grid[(i + 1, j + 1)]
-            self.add_face([v_br, v_tr, v_top])
+            subgrid[(i, j, True)] = self.add_face([v_br, v_tr, v_top])
+
+      # Precompute spatial index data for O(1) face lookup.
+      # Edge normals and opposite-vertex dot products for containment test:
+      edge_normals = [
+          np.cross(v0, v1), np.cross(v1, v2), np.cross(v2, v0),
+      ]
+      opp_dots = [
+          float(np.dot(edge_normals[0], v2)),
+          float(np.dot(edge_normals[1], v0)),
+          float(np.dot(edge_normals[2], v1)),
+      ]
+      # Gnomonic projection constants for barycentric sub-face indexing.
+      # Base face parameterization: point = w0*v0 + w1*v1 + w2*v2 (on plane).
+      # w1 and w2 are solved via Cramer's rule on edges e1=v1-v0, e2=v2-v0.
+      e1 = v1 - v0
+      e2 = v2 - v0
+      face_n = np.cross(e1, e2)
+      plane_d = float(np.dot(face_n, v0))
+      d00 = float(np.dot(e1, e1))
+      d01 = float(np.dot(e1, e2))
+      d11 = float(np.dot(e2, e2))
+      cramer_inv = 1.0 / (d00 * d11 - d01 * d01)
+
+      # Tuple: (edge_normals, opp_dots, e1, e2, face_n, plane_d,
+      #         d00, d01, d11, cramer_inv, subgrid)
+      self._spatial_index.append((
+          edge_normals, opp_dots, v0, e1, e2, face_n, plane_d,
+          d00, d01, d11, cramer_inv, subgrid,
+      ))
+
+    self._base_face_normals = np.array(base_face_normals, dtype=np.float64)
 
   @classmethod
   def create_geodesic_sphere(
