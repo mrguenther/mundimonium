@@ -10,6 +10,7 @@ from numbers import Number
 from typing import Self, override
 
 import abc
+import functools
 import math
 
 
@@ -382,14 +383,21 @@ class IsometricPoint(HashByIndex):
         self.grid, self.b - vector.delta_b,
         self.s - vector.delta_s)
 
-  def __sub__(self, other):
-    """Dispatches to `_sub_point` or `_sub_vector` depending on operand type."""
-    if isinstance(other, IsometricPoint):
-      return self._sub_point(other)
-    elif isinstance(other, IsometricVector):
-      return self._sub_vector(other)
-    else:
-      raise ValueError("Invalid __sub__() operand.")
+  @functools.singledispatchmethod
+  def __sub__(
+      self, other: IsometricPoint | IsometricVector,
+  ) -> IsometricVector | IsometricPoint:
+    """Subtracts a vector or another point from this point.
+
+    ```
+    IsometricPoint - IsometricVector -> IsometricPoint
+    IsometricPoint - IsometricPoint  -> IsometricVector
+    ```
+    """
+    # Dispatches to `_sub_point` or `_sub_vector`. These delegations are
+    # registered outside of the class body, when both `IsometricPoint` and
+    # `IsometricVector` are fully defined.
+    raise TypeError(f"Unexpected 'other' type '{type(other).__name__}'")
 
   def move_to(
       self,
@@ -667,3 +675,7 @@ class IsometricVector:
     """Scales this vector by `1/scalar`."""
     return IsometricVector(
         self._b_component / scalar, self._s_component / scalar)
+
+
+IsometricPoint.__sub__.register(IsometricPoint)(IsometricPoint._sub_point)
+IsometricPoint.__sub__.register(IsometricVector)(IsometricPoint._sub_vector)
