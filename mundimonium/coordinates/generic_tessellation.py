@@ -28,7 +28,7 @@ class GenericTessellation(Tessellation):
     Args:
       **kwargs: Forwarded up the method resolution order.
     """
-    super().__init__(vertex_type=vertex_type, face_type=face_type)
+    super().__init__(**kwargs)
     self._matrices_built: bool = False
     self._heat_solver = None
     self._poisson_solver = None

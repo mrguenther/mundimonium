@@ -183,8 +183,9 @@ class IsometricGrid(abc.ABC):
   def to_world_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
     """Converts a point on `self` to a tessellation-defined coordinate system.
 
-    The length of the returned coordinate vector is tessellation-defined, as is
-    the meaning of each individual coordinate in the vector.
+    The dimensionality of the returned coordinate vector is
+    tessellation-defined, as is the meaning of each individual coordinate in the
+    vector.
 
     For example, on a spherical world, this would return a 2-vector of spherical
     coordinates `(colatitude, longitude)`, with the radial-distance coordinate
