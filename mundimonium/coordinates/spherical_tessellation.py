@@ -18,8 +18,7 @@ class SphericalTessellation(Tessellation):
   def __init__(
       self,
       radius: float = 1.0,
-      frequency: int | None = None,
-      subdivisions: int | None = None,
+      frequency: int = 1,
       center: tuple[float, float, float] = (0.0, 0.0, 0.0),
       **kwargs):
     """Constructs a spherical mesh.
@@ -30,25 +29,28 @@ class SphericalTessellation(Tessellation):
       radius:       Radius of the sphere.
       frequency:    Class I subdivision frequency nu >= 1 (1 = base icosahedron,
                     2 = 80 faces, 3 = 180 faces, etc.).
-      subdivisions: Power-of-two subdivision level (k -> frequency = 2^k).
       center:       3D (x, y, z) rectangular coordinates of the sphere center.
       **kwargs:     Forwarded up the method resolution order.
     """
-    super().__init__(**kwargs)
-    self.radius = float(radius)
-    self.center = tuple(float(c) for c in center)
+    ideal_surface_area = 4.0 * math.pi * radius * radius
+    face_count = 20 * frequency * frequency
+    ideal_face_area = ideal_surface_area / face_count
+    ideal_face_side_length = math.sqrt(ideal_face_area * 4 / math.sqrt(3))
 
-    if (frequency is None) == (subdivisions is None):
-      raise ValueError(
-          "Exactly one of the arguments ('frequency', 'subdivisions') must be "
-          "provided."
-      )
-    elif frequency is not None:
-      effective_freq = frequency
-    else:  # subdivisions is not None
-      effective_freq = 2 ** subdivisions
+    super().__init__(face_side_length=ideal_face_side_length, **kwargs)
 
-    self._generate_tessellation(frequency=effective_freq, center=self.center)
+    self._radius = float(radius)
+    self._center = tuple(float(c) for c in center)
+
+    self._generate_tessellation(frequency=frequency)
+
+  @property
+  def radius(self) -> float:
+    return self._radius
+
+  @property
+  def center(self) -> tuple[float, float, float]:
+    return self._radius
 
   def _spherical_to_3d(
       self, colatitude: float, longitude: float,
@@ -63,7 +65,7 @@ class SphericalTessellation(Tessellation):
       Vector (x, y, z) of length `self.radius` relative to the sphere's center.
     """
     sin_colatitude = math.sin(colatitude)
-    return self.radius * np.array([
+    return self._radius * np.array([
         sin_colatitude * math.cos(longitude),
         sin_colatitude * math.sin(longitude),
         math.cos(colatitude),
@@ -86,7 +88,7 @@ class SphericalTessellation(Tessellation):
       The containing TessellationFace and the barycentric weights (wb, ws, wd)
       of `direction` within it.
     """
-    unit_dir = direction / self.radius
+    unit_dir = direction / self._radius
 
     base_idx = int(np.argmax(self._base_face_normals @ unit_dir))
     (_, _, v0, e1, e2, face_n, plane_d,
@@ -132,7 +134,7 @@ class SphericalTessellation(Tessellation):
       unit_dir: np.ndarray,
   ) -> tuple[float, float, float]:
     """Exact barycentric weights of a direction within a given face's plane."""
-    center = np.array(self.center, dtype=np.float64)
+    center = np.array(self._center, dtype=np.float64)
     vb = np.array(face.vertex_b.projection_coordinates, dtype=np.float64) - center
     vs = np.array(face.vertex_s.projection_coordinates, dtype=np.float64) - center
     vd = np.array(face.vertex_d.projection_coordinates, dtype=np.float64) - center
@@ -210,11 +212,9 @@ class SphericalTessellation(Tessellation):
     longitude = math.atan2(y, x) % (2.0 * math.pi)
     return colatitude, longitude
 
-  @override
   def _generate_tessellation(
       self,
       frequency: int = 1,
-      center: tuple[float, float, float] = (0.0, 0.0, 0.0)
   ) -> None:
     """
     Populates this tessellation as a Class I geodesic sphere of given frequency.
@@ -222,8 +222,7 @@ class SphericalTessellation(Tessellation):
     if frequency < 1:
       raise ValueError(f"Frequency must be an integer >= 1, got {frequency}.")
 
-    self.center = tuple(float(c) for c in center)
-    cx, cy, cz = self.center
+    cx, cy, cz = self._center
 
     # 1. Base regular icosahedron vertices (normalized to unit sphere)
     phi = (1.0 + math.sqrt(5.0)) / 2.0
@@ -252,9 +251,9 @@ class SphericalTessellation(Tessellation):
       p_sphere = pos_unit / norm if norm > 1e-12 else pos_unit
 
       # Spatial (rectangular) coordinates on the sphere
-      x = float(cx + self.radius * p_sphere[0])
-      y = float(cy + self.radius * p_sphere[1])
-      z = float(cz + self.radius * p_sphere[2])
+      x = float(cx + self._radius * p_sphere[0])
+      y = float(cy + self._radius * p_sphere[1])
+      z = float(cz + self._radius * p_sphere[2])
 
       # Key rounded to 8 decimal places for floating-point tolerance
       key = (round(x, 8), round(y, 8), round(z, 8))
@@ -343,7 +342,7 @@ class SphericalTessellation(Tessellation):
         wd * np.array(v_d.projection_coordinates, dtype=np.float64)
     )
     # Shift relative to center
-    rel = p3d - np.array(self.center, dtype=np.float64)
+    rel = p3d - np.array(self._center, dtype=np.float64)
     norm = np.linalg.norm(rel)
     if norm < 1e-12:
       return rel
@@ -355,7 +354,7 @@ class SphericalTessellation(Tessellation):
     v1 = self._point_to_3d_unit(p1)
     v2 = self._point_to_3d_unit(p2)
     cos_theta = np.clip(np.dot(v1, v2), -1.0, 1.0)
-    return float(self.radius * np.arccos(cos_theta))
+    return float(self._radius * np.arccos(cos_theta))
 
   @override
   def shortest_path(
@@ -372,9 +371,9 @@ class SphericalTessellation(Tessellation):
     dot = np.clip(np.dot(v1, v2), -1.0, 1.0)
     omega = np.arccos(dot)
 
-    c = np.array(self.center, dtype=np.float64)
+    c = np.array(self._center, dtype=np.float64)
     if omega < 1e-10:
-      return [c + self.radius * v1]
+      return [c + self._radius * v1]
 
     sin_omega = np.sin(omega)
     path_3d = []
@@ -383,5 +382,5 @@ class SphericalTessellation(Tessellation):
           (np.sin((1.0 - t) * omega) / sin_omega) * v1 +
           (np.sin(t * omega) / sin_omega) * v2
       )
-      path_3d.append(c + self.radius * p_dir)
+      path_3d.append(c + self._radius * p_dir)
     return path_3d

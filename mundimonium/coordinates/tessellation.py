@@ -16,6 +16,9 @@ from typing import get_type_hints, override
 import numpy as np
 
 
+_EQUILATERAL_TRIANGLE_AREA_TO_BASE_SQUARED = 4.0 / math.sqrt(3.0)
+
+
 class _TessellationImplMetadata:
   """Metadata about a subclass of `Tessellation`.
 
@@ -120,11 +123,6 @@ class Tessellation(abc.ABC):
     """
     raise NotImplementedError()
 
-  def _generate_tessellation(self) -> None:
-    """Populates this tessellation's vertices and faces. Implementation-defined.
-    """
-    raise NotImplementedError()
-
   def on_vertex_added(self, vertex: TessellationVertex) -> None:
     """Hook for subclasses to update internal state when mesh topology changes.
 
@@ -181,22 +179,55 @@ class Tessellation(abc.ABC):
 
   def add_face(
       self,
-      bounding_vertices: list[TessellationVertex] | TessellationFace
+      bounding_vertices: list[TessellationVertex] | TessellationFace,
+      *,
+      side_length: Number | None = None,
+      area: Number | None = None,
+      linear_distortion_factor: Number | None = None,
+      area_distortion_factor: Number | None = None,
   ) -> TessellationFace:
-    """Creates and registers a new face or registers an existing face.
+    """Creates and registers a new face bounded by three vertices.
 
-    If `bounding_vertices` is a list of three bounding vertices, creates and
-    registers a new face bounded by those vertices. If a `TessellationFace` is
-    passed instead, registers the existing face.
+    `side_length`, `area`, `linear_distortion_factor`, and
+    `area_distortion_factor` are optional and mutually exclusive. If none are
+    passed, the tessellation's default `_face_side_length` is used. It is an
+    error to pass multiple of these arguments.
+
+    Args:
+      bounding_vertices:        A list of the three bounding vertices.
+      side_length:              An explicit side length for the face. Overrides
+                                the tessellation's default `_face_side_length`.
+      area:                     An explicit area for the face. Overrides the
+                                tessellation's default `_face_side_length`.
+      linear_distortion_factor: A 1D scale multiplier for the face relative to
+                                the tessellation's default `_face_side_length`.
+      area_distortion_factor:   A 2D scale multiplier for the face relative to
+                                the area implied by the tessellation's default
+                                `_face_side_length`.
+
+    Returns:
+      The newly created and registered face.
     """
-    if isinstance(bounding_vertices, TessellationFace):
-      self.register_face(bounding_vertices)
-      return bounding_vertices
+    if len(bounding_vertices) != 3:
+      raise ValueError("A face must be bounded by exactly three vertices.")
 
-    assert len(bounding_vertices) == 3, (
-        "A face must be bounded by exactly three vertices.")
+    if sum(1 for arg in (side_length, area, linear_distortion_factor,
+                         area_distortion_factor)
+           if arg is not None) > 1:
+      raise ValueError(
+          "Arguments 'side_length', 'area', 'linear_distortion_factor', and "
+          "'area_distortion_factor' are mutually exclusive.")
+    elif area is not None:
+      side_length = math.sqrt(area * _EQUILATERAL_TRIANGLE_AREA_TO_BASE_SQUARED)
+    elif linear_distortion_factor is not None:
+      side_length = self._face_side_length * linear_distortion_factor
+    elif area_distortion_factor is not None:
+      side_length = self._face_side_length * math.sqrt(area_distortion_factor)
+    elif side_length is None:
+      side_length = self._face_side_length
+
     new_face = self.face_type(
-        side_length=self._face_side_length,
+        side_length=side_length,
         vertex_b=bounding_vertices[0],
         vertex_s=bounding_vertices[1],
         vertex_d=bounding_vertices[2],
