@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from mundimonium.coordinates.exceptions import EndOfMeshSurfaceException
 from mundimonium.coordinates.tessellation import (
     Tessellation, TessellationFace, TessellationVertex
 )
@@ -188,7 +189,7 @@ class GenericTessellation(Tessellation):
     x, y = p[0], p[1]
     h = (np.sqrt(3.0) / 2.0) * self._a
     w2 = y / h
-    w1 = (x - 0.5 * y / np.sqrt(3.0)) / self._a
+    w1 = (x - y / np.sqrt(3.0)) / self._a
     w0 = 1.0 - w1 - w2
     return (float(w0), float(w1), float(w2))
 
@@ -365,11 +366,137 @@ class GenericTessellation(Tessellation):
     path.reverse()
     return path
 
+  @staticmethod
+  def _canonical_local_frame(face: TessellationFace) -> np.ndarray:
+    """The canonical local 2D layout of `face`'s own (b, s, d) system.
+
+    Vertices B, S, D sit at (0, 0), (a, 0), (a/2, h), where `a` is
+    `face.side_length` and `h` is `face.altitude`. Computed per-face
+    (unlike the mesh-wide `self._p_local`, which assumes a uniform side
+    length across every face) so it stays correct for distorted faces too.
+    """
+    a = float(face.side_length)
+    h = float(face.altitude)
+    return np.array([[0.0, 0.0], [a, 0.0], [0.5 * a, h]], dtype=np.float64)
+
+  @staticmethod
+  def _local_2d_to_barycentric_in_frame(
+      p: np.ndarray, frame: np.ndarray) -> tuple[float, float, float]:
+    """Like `_local_2d_to_barycentric`, but for an arbitrary `frame` (as
+    returned by `_canonical_local_frame`) rather than the mesh-wide
+    `self._p_local`.
+
+    Inverts `x = w1*a + w2*(a/2)`, `y = w2*h` (with `h = a*sqrt(3)/2`) for
+    `frame = [(0,0), (a,0), (a/2,h)]`.
+    """
+    a = frame[1, 0]
+    h = frame[2, 1]
+    x, y = p[0], p[1]
+    w2 = y / h
+    w1 = (x - y / np.sqrt(3.0)) / a
+    w0 = 1.0 - w1 - w2
+    return (float(w0), float(w1), float(w2))
+
   @override
   def geodesically_canonicalize_point(
-      self, point: IsometricPoint) -> IsometricPoint:
-    """Moves `point` to a new grid if located outside its current grid's bounds.
+      self, point: IsometricPoint, max_steps: int = 500,
+  ) -> IsometricPoint:
+    """Moves `point` to a new grid if located outside its current grid's
+    bounds, walking across as many faces as necessary.
+
+    `point`'s out-of-range barycentric coordinates on its current face are
+    treated as a straight-line displacement from that face's centroid, in
+    the face's own flat local frame. This ray is walked face by face: each
+    shared edge crossing "unfolds" the two faces flat via a rotation+scale
+    transform (rotation alone if the two faces' side lengths match) applied
+    to the ray's remaining displacement -- the same edge-crossing technique
+    `shortest_path` uses per step, generalized here to also carry a
+    direction vector rather than just a traced position. This makes the
+    result the mesh's "straightest geodesic" from the centroid: identical to
+    the true shortest path everywhere except where that path would need to
+    bend around a mesh vertex with nonzero angle defect.
 
     Mutates and returns `point`, not a copy.
+
+    Raises:
+      EndOfMeshSurfaceException: If the ray walks off the edge of an open
+        mesh before landing inside a face.
+      RuntimeError: If `max_steps` is exceeded without landing inside a
+        face (e.g. a topology bug causing the walk to cycle).
     """
-    raise NotImplementedError()
+    curr_face: TessellationFace = point.grid
+    p_local = self._canonical_local_frame(curr_face)
+    wb, ws, wd = point.barycentric
+    target_2d = wb * p_local[0] + ws * p_local[1] + wd * p_local[2]
+    curr_pos = (p_local[0] + p_local[1] + p_local[2]) / 3.0
+    direction = target_2d - curr_pos
+
+    for _ in range(max_steps):
+      p_local = self._canonical_local_frame(curr_face)
+      min_t = float('inf')
+      hit_edge = -1
+      hit_alpha = 0.0
+
+      for k in range(3):
+        pA = p_local[(k + 1) % 3]
+        pB = p_local[(k + 2) % 3]
+        edge_dir = pB - pA
+
+        det = direction[0] * (-edge_dir[1]) - direction[1] * (-edge_dir[0])
+        if abs(det) > 1e-12:
+          dx = pA[0] - curr_pos[0]
+          dy = pA[1] - curr_pos[1]
+          t = (dx * (-edge_dir[1]) - dy * (-edge_dir[0])) / det
+          alpha = (direction[0] * dy - direction[1] * dx) / det
+          if 1e-9 < t <= 1.0 + 1e-9 and -1e-9 <= alpha <= 1.0 + 1e-9:
+            if t < min_t:
+              min_t = t
+              hit_edge = k
+              hit_alpha = alpha
+
+      if hit_edge == -1:
+        # The (remaining) target lies within this face: done.
+        final_pos = curr_pos + direction
+        fwb, fws, fwd = self._local_2d_to_barycentric_in_frame(
+            final_pos, p_local)
+        alt = curr_face.altitude
+        return point.update(grid=curr_face, b=fwb * alt, s=fws * alt)
+
+      pA = p_local[(hit_edge + 1) % 3]
+      pB = p_local[(hit_edge + 2) % 3]
+      edge_point = pA + hit_alpha * (pB - pA)
+
+      edge_dir_enum = IsometricDirection(hit_edge)
+      next_face = curr_face.face_on_edge(edge_dir_enum)
+      if next_face is None:
+        raise EndOfMeshSurfaceException(
+            "Cannot canonicalize point located outside of mesh-surface "
+            "boundary.")
+
+      # Match by actual shared-vertex identity, not by index pattern: each
+      # face labels its own vertices independently, so which of `next_face`'s
+      # three local directions corresponds to `pA`/`pB` isn't fixed -- it has
+      # to be looked up per vertex.
+      vertex_at_pA = curr_face.vertex_at(IsometricDirection((hit_edge + 1) % 3))
+      vertex_at_pB = curr_face.vertex_at(IsometricDirection((hit_edge + 2) % 3))
+      next_p_local = self._canonical_local_frame(next_face)
+      pA_next = next_p_local[next_face.direction_toward_vertex(vertex_at_pA).value]
+      pB_next = next_p_local[next_face.direction_toward_vertex(vertex_at_pB).value]
+
+      # Rotation+scale transform taking this shared edge (as seen from
+      # `curr_face`) onto the same edge as seen from `next_face` -- i.e.
+      # "unfolding" the two faces flat, hinged along the shared edge.
+      u = pB - pA
+      v = pB_next - pA_next
+      inv_len_sq = 1.0 / (u[0] ** 2 + u[1] ** 2)
+      cos_t = (u[0] * v[0] + u[1] * v[1]) * inv_len_sq
+      sin_t = (u[0] * v[1] - u[1] * v[0]) * inv_len_sq
+      rotation = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
+
+      curr_pos = pA_next + rotation @ (edge_point - pA)
+      direction = rotation @ (direction * (1.0 - min_t))
+      curr_face = next_face
+
+    raise RuntimeError(
+        f"geodesically_canonicalize_point exceeded {max_steps} steps; the "
+        "mesh may contain a cycle preventing convergence.")

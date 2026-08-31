@@ -390,6 +390,21 @@ class SphericalTessellation(Tessellation):
       self, point: IsometricPoint) -> IsometricPoint:
     """Moves `point` to a new grid if located outside its current grid's bounds.
 
+    Exploits the sphere's exact embedding: `point`'s (possibly out-of-range)
+    barycentric coordinates on its current face extrapolate, via an affine
+    combination of that face's vertices, to a point on the face's plane --
+    and gnomonic projection is a bijection between a face's plane and 3D ray
+    directions from the sphere's center, so normalizing that extrapolated
+    point (`_point_to_3d_unit` already does exactly this) recovers the exact
+    direction `point` represents. Feeding that into the O(1)
+    `_locate_face_and_barycentric` then finds the correct face directly, with
+    no face-by-face walking needed (unlike the generic, non-embedded case
+    handled by `GenericTessellation.geodesically_canonicalize_point`).
+
     Mutates and returns `point`, not a copy.
     """
-    raise NotImplementedError()
+    unit_dir = self._point_to_3d_unit(point)
+    face, (wb, ws, wd) = self._locate_face_and_barycentric(
+        self._radius * unit_dir)
+    alt = face.altitude
+    return point.update(grid=face, b=wb * alt, s=ws * alt)
