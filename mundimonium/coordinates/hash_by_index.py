@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from itertools import count
 
 
@@ -35,8 +37,8 @@ class HashByIndex:
     instance._hash = HashByIndex._next_hash()
     return instance
 
-  def __eq__(self, other: "HashByIndex") -> bool:
-    """Identity equality: an instance equals only itself."""
+  def __eq__(self, other: HashByIndex) -> bool:
+    """Identity equality: an instance equals only itself (unless overridden)."""
     return self is other
 
   def __hash__(self) -> int:

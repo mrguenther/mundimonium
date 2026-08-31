@@ -68,7 +68,7 @@ class IsometricDirection(Enum):
     return repr(self)
 
 
-class IsometricGrid(abc.ABC):
+class IsometricGrid(abc.ABC, HashByIndex):
   """Abstract base for a triangular grid that `IsometricPoint`s live on."""
 
   def __init__(self,
@@ -173,13 +173,14 @@ class IsometricGrid(abc.ABC):
     """
     raise NotImplementedError()
 
-  def project_onto_root_grid(self, point: IsometricPoint):
+  def project_onto_root_grid(
+      self, point: IsometricPoint, in_place: bool = False) -> IsometricPoint:
     """Project `point` onto the root grid if this grid is a `NestedIsoGrid`.
 
     Otherwise, simply return `point` since this grid doesn't have a parent and
     is thus a root grid by default.
     """
-    return point
+    return point if in_place else IsometricPoint(point.grid, point.b, point.s)
 
   def to_world_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
     """Converts a point on `self` to a tessellation-defined coordinate system.
@@ -193,6 +194,10 @@ class IsometricGrid(abc.ABC):
     implicitly equal to the world's radius.
     """
     raise NotImplementedError()
+
+  @classmethod
+  def canonicalize_point(cls, point: IsometricPoint) -> IsometricPoint:
+    return point
 
   @classmethod
   def common_grid_type(
@@ -260,6 +265,28 @@ class IsometricPoint(HashByIndex):
     self._b: Number = b
     self._s: Number = s
 
+  def __hash__(self):
+    return hash((self._grid, self._b, self._s))
+
+  def __eq__(self, other):
+    return (self._grid is other._grid and
+            self._b == other._b and
+            self._s == other._s)
+
+  def update(self,
+             grid: IsometricGrid | None,
+             b: Number | None,
+             s: Number | None) -> Self:
+    self._grid = grid if grid is not None else self._grid
+    self._b = b if b is not None else self._b
+    self._s = s if s is not None else self._s
+    return self
+
+  def update_to_match(self, other: IsometricPoint):
+    self._grid = other._grid
+    self._b = other._b
+    self._s = other._s
+
   @classmethod
   def center(cls, grid: IsometricGrid) -> Self:
     """Returns the centroid of `grid`."""
@@ -296,13 +323,19 @@ class IsometricPoint(HashByIndex):
     alt = self.grid.altitude
     return (self.b / alt, self.s / alt, self.d / alt)
 
-  def project_onto_adjacent_grid(self, adjacent_grid) -> Self:
+  def project_onto_adjacent_grid(
+      self, adjacent_grid, in_place: bool = False) -> Self:
     """
     Initialize as a projection of point `other` onto `grid`. In order to be well
     defined, this requires that `other.grid` and `grid` share an edge.
+
+    Args:
+      adjacent_grid: The adjacent grid onto which to project `self`.
+      in_place:      If `True`, update and return `self`; else, return the
+                     projection as a new point and leave `self` unchanged.
     """
     if adjacent_grid is self.grid:
-      return IsometricPoint(self.grid, self.b, self.s)
+      return self if in_place else IsometricPoint(self.grid, self.b, self.s)
     altitude_mean = (adjacent_grid.altitude + self.grid.altitude) / 2
     old_border_edge = self.grid.direction_away_from_face(adjacent_grid)
     new_border_edge = adjacent_grid.direction_away_from_face(self.grid)
@@ -310,23 +343,25 @@ class IsometricPoint(HashByIndex):
         new_border_edge.value)
     local_complement_of_new_s = \
         local_complement_of_new_b.rotated_cw_by_index(1)
-    projected_point = IsometricPoint(
-        adjacent_grid,
-        altitude_mean - self[local_complement_of_new_b],
-        altitude_mean - self[local_complement_of_new_s])
+    projected_point_b = altitude_mean - self[local_complement_of_new_b]
+    projected_point_s = altitude_mean - self[local_complement_of_new_s]
     if new_border_edge == IsometricDirection.B:
-      projected_point._b -= altitude_mean
+      projected_point_b -= altitude_mean
     elif new_border_edge == IsometricDirection.S:
-      projected_point._s -= altitude_mean
-    return projected_point
+      projected_point_s -= altitude_mean
+    if in_place:
+      return self.update(
+          grid=adjacent_grid, b=projected_point_b, s=projected_point_s)
+    else:
+      return IsometricPoint(adjacent_grid, projected_point_b, projected_point_s)
 
-  def project_onto_root_grid(self) -> Self:
+  def project_onto_root_grid(self, in_place: bool = False) -> Self:
     """Project `self` onto the root grid if `self.grid` is a `NestedIsoGrid`.
 
     Otherwise, simply return `self` since the local grid doesn't have a parent
     and is thus a root grid by default.
     """
-    return self.grid.project_onto_root_grid(self)
+    return self.grid.project_onto_root_grid(self, in_place=in_place)
 
   def to_world_coordinates(self) -> tuple[Number, ...]:
     """Converts this point to the world's (mesh-defined) coordinate system."""
@@ -335,6 +370,13 @@ class IsometricPoint(HashByIndex):
   def distance_from(self, other: IsometricPoint) -> Number:
     """Distance from this point to `other` anywhere on the same mesh/world."""
     return self.grid.distance(self, other)
+
+  def canonicalize(self) -> Self:
+    """Moves `self` to a new grid if located outside the current grid's bounds.
+
+    Mutates and returns `self`, not a copy.
+    """
+    return self.grid.canonicalize_point(self)
 
   def __repr__(self) -> str:
     """Debug form including this point's hash and grid."""
@@ -368,10 +410,19 @@ class IsometricPoint(HashByIndex):
 
   def __add__(self, vector: IsometricVector) -> IsometricPoint:
     """Returns a new `IsometricPoint` translated from `self` by `vector`."""
-    assert type(vector) is IsometricVector, "Invalid __add__() operand."
+    assert isinstance(vector, IsometricVector), "Invalid __add__() operand."
     return IsometricPoint(
-        self.grid, self.b + vector.delta_b,
-        self.s + vector.delta_s)
+        self.grid,
+        self.b + vector.delta_b,
+        self.s + vector.delta_s,
+    ).canonicalize()
+
+  def __iadd__(self, vector: IsometricVector) -> Self:
+    """Returns a new `IsometricPoint` translated from `self` by `vector`."""
+    assert isinstance(vector, IsometricVector), "Invalid __iadd__() operand."
+    self._b += vector.delta_b
+    self._s += vector.delta_s
+    return self.canonicalize()
 
   def _sub_point(self, other: IsometricPoint) -> IsometricVector:
     """The `IsometricVector` pointing from `other` to `self`."""
@@ -380,8 +431,10 @@ class IsometricPoint(HashByIndex):
   def _sub_vector(self, vector: IsometricVector) -> IsometricPoint:
     """This point translated backward by an `IsometricVector`."""
     return IsometricPoint(
-        self.grid, self.b - vector.delta_b,
-        self.s - vector.delta_s)
+        self.grid,
+        self.b - vector.delta_b,
+        self.s - vector.delta_s,
+    ).canonicalize()
 
   @functools.singledispatchmethod
   def __sub__(
@@ -399,13 +452,24 @@ class IsometricPoint(HashByIndex):
     # `IsometricVector` are fully defined.
     raise TypeError(f"Unexpected 'other' type '{type(other).__name__}'")
 
+  def __isub__(self, vector: IsometricVector) -> Self:
+    """Returns a new `IsometricPoint` translated from `self` by `-vector`."""
+    assert isinstance(vector, IsometricVector), "Invalid __isub__() operand."
+    self._b -= vector.delta_b
+    self._s -= vector.delta_s
+    return self.canonicalize()
+
   def move_to(
       self,
       b: Number | None = None,
       s: Number | None = None,
       d: Number | None = None,
-  ) -> None:
-    """Repositions this point in place, given exactly two of `(b, s, d)`."""
+  ) -> Self:
+    """Repositions this point in place, given exactly two of `(b, s, d)`.
+
+    Does not automatically call `self.canonicalize()`. If the new position may
+    fall outside of `self.grid`, chain calls: `self.move_to(...).canonicalize()`
+    """
     assert argc(b, s, d) == 2, \
         "move_to() must be provided exactly two of (b, s, d)."
     if b is None:
@@ -417,6 +481,8 @@ class IsometricPoint(HashByIndex):
     else:  # d is None
       self.b = b
       self.s = s
+
+    return self
 
   # def move_by(
   #     self,
@@ -490,24 +556,24 @@ class IsometricVector:
 
   def __init__(self, b_component: Number, s_component: Number):
     """Constructs a vector directly from its B and S components."""
-    self._b_component = b_component
-    self._s_component = s_component
-    self._cached_length = None
-    self._length_dirty = True
+    self._b_component: Number = b_component
+    self._s_component: Number = s_component
+    self._cached_length: Number = None
+    self._length_dirty: bool = True
 
   @classmethod
-  def with_net_b_s(cls, delta_b: Number, delta_s: Number):
+  def with_net_b_s(cls, delta_b: Number, delta_s: Number) -> IsometricVector:
     """Constructs a vector from its net changes along the B and S axes."""
     return IsometricVector(delta_b - 0.5 * delta_s, delta_s - 0.5 * delta_b)
 
   @classmethod
-  def with_net_b_d(cls, delta_b: Number, delta_d: Number):
+  def with_net_b_d(cls, delta_b: Number, delta_d: Number) -> IsometricVector:
     """Constructs a vector from its net changes along the B and D axes."""
     return IsometricVector(
         delta_b - 0.5 * delta_d, -0.5 * (delta_b + delta_d))
 
   @classmethod
-  def with_net_s_d(cls, delta_s: Number, delta_d: Number):
+  def with_net_s_d(cls, delta_s: Number, delta_d: Number) -> IsometricVector:
     """Constructs a vector from its net changes along the S and D axes."""
     return IsometricVector(
         -0.5 * (delta_s + delta_d), delta_s - 0.5 * delta_d)
@@ -583,17 +649,17 @@ class IsometricVector:
     return -0.5 * (self._b_component + self._s_component)
 
   @delta_b.setter
-  def delta_b(self, delta_b):
+  def delta_b(self, delta_b: Number) -> None:
     """Sets the vector's net change along the B axis."""
     self.b_component += (delta_b - self.delta_b)
 
   @delta_b.setter
-  def delta_s(self, delta_s):
+  def delta_s(self, delta_s: Number) -> None:
     """Sets the vector's net change along the S axis."""
     self.s_component += (delta_s - self.delta_s)
 
   @delta_d.setter
-  def delta_d(self, delta_d):
+  def delta_d(self, delta_d: Number) -> None:
     """Sets the vector's net change along the D axis."""
     self._length_dirty = True
     delta_delta_b_s = 0.5 * (delta_d - self.delta_d)

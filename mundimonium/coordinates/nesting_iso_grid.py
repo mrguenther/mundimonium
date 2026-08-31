@@ -412,11 +412,15 @@ class NestingIsoGrid(IsometricGrid):
     return isometric_to_cartesian(*self.to_root_isometric(b, s, d))
 
   @override
-  def project_onto_root_grid(self, point: IsometricPoint) -> IsometricPoint:
+  def project_onto_root_grid(
+      self, point: IsometricPoint, in_place: bool = False) -> IsometricPoint:
     """Project a local point onto the root grid's coordinate system."""
     root_b, root_s, root_d = self.to_root_isometric(
         point.b, point.s, point.d)
-    return IsometricPoint(self._root, root_b, root_s)
+    if in_place:
+      return point.update(grid=self._root, b=root_b, s=root_s)
+    else:
+      return IsometricPoint(self._root, root_b, root_s)
 
   # ==================================================================
   # 2D rendering

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from mundimonium.coordinates.exceptions import NotAdjacentException
+from mundimonium.coordinates.exceptions import (
+    NotAdjacentException, EndOfMeshSurfaceException
+)
 from mundimonium.coordinates.hash_by_index import HashByIndex
 from mundimonium.coordinates.isometric import (
     IsometricDirection, IsometricGrid, IsometricPoint, IsometricVector,
@@ -263,6 +265,15 @@ class Tessellation(abc.ABC):
     """
     raise NotImplementedError()
 
+  @abc.abstractmethod
+  def geodesically_canonicalize_point(
+      self, point: IsometricPoint) -> IsometricPoint:
+    """Moves `point` to a new grid if located outside its current grid's bounds.
+
+    Mutates and returns `point`, not a copy.
+    """
+    raise NotImplementedError()
+
 
 class TessellationVertex(HashByIndex):
   """A vertex of a `Tessellation`, positioned in 3D projection space."""
@@ -361,7 +372,7 @@ class TessellationVertex(HashByIndex):
     return self._adjacent_faces
 
 
-class TessellationFace(HashByIndex, IsometricGrid):
+class TessellationFace(IsometricGrid):
   def __init__(
       self,
       *,
@@ -407,6 +418,52 @@ class TessellationFace(HashByIndex, IsometricGrid):
   def to_mesh_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
     """Converts `point` to the owning tessellation's coordinate system."""
     return self._tessellation.coords_at_point(point)
+
+  @classmethod
+  @override
+  def canonicalize_point(cls, point: IsometricPoint) -> IsometricPoint:
+    """Moves `point` to a new grid if located outside its current grid's bounds.
+
+    Mutates and returns `point`, not a copy.
+    """
+    grid: TessellationFace = point.grid
+    if not isinstance(grid, TessellationFace):
+      raise TypeError(
+          "The provided 'IsometricPoint' is not on a grid of type "
+          "'TessellationFace'.")
+    altitude: Number = grid.altitude
+    project_to_face_on_edge: IsometricDirection | None = None
+    if point.b < 0:
+      if point.s <= altitude and point.d <= altitude:
+        project_to_face_on_edge = IsometricDirection.B
+    elif point.s < 0:
+      if point.b <= altitude and point.d <= altitude:
+        project_to_face_on_edge = IsometricDirection.B
+    elif point.d < 0:
+      if point.b <= altitude and point.s <= altitude:
+        project_to_face_on_edge = IsometricDirection.B
+    else:
+      return point
+
+    if project_to_face_on_edge is None:
+      return grid._tessellation.geodesically_canonicalize_point(point)
+
+    new_grid = grid.face_on_edge(project_to_face_on_edge)
+    if new_grid is None:
+      raise EndOfMeshSurfaceException(
+          "Cannot canonicalize point located outside of mesh-surface boundary.")
+    point.project_onto_adjacent_grid(new_grid, in_place=True)
+
+    # If the grids have different altitudes, the projection isn't exact and
+    # might land slightly outside of `new_grid`. To account for this, repeat the
+    # canonicalization process if the altitudes differ.
+    # (If the point landed inside of `new_grid` anyway, which should happen most
+    # of the time assuming scale distortion is small, the repeat will quickly
+    # return the unmodified point.)
+    if new_grid.altitude != altitude:
+      new_grid.canonicalize_point(point)
+    return point
+
 
   @property
   def tessellation(self) -> Tessellation | None:

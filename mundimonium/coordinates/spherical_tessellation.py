@@ -384,3 +384,12 @@ class SphericalTessellation(Tessellation):
       )
       path_3d.append(c + self._radius * p_dir)
     return path_3d
+
+  @override
+  def geodesically_canonicalize_point(
+      self, point: IsometricPoint) -> IsometricPoint:
+    """Moves `point` to a new grid if located outside its current grid's bounds.
+
+    Mutates and returns `point`, not a copy.
+    """
+    raise NotImplementedError()

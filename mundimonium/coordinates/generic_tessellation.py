@@ -364,3 +364,12 @@ class GenericTessellation(Tessellation):
     # Reverse so path is ordered from p1 -> p2
     path.reverse()
     return path
+
+  @override
+  def geodesically_canonicalize_point(
+      self, point: IsometricPoint) -> IsometricPoint:
+    """Moves `point` to a new grid if located outside its current grid's bounds.
+
+    Mutates and returns `point`, not a copy.
+    """
+    raise NotImplementedError()
