@@ -70,7 +70,35 @@ class LodMeshSector(NestingIsoGrid):
 
     Mutates and returns `point`, not a copy.
     """
-    raise NotImplementedError()
+    b: float = float(point.b)
+    s: float = float(point.s)
+    d: float = float(point.d)
+    grid: NestingIsoGrid = point.grid
+
+    while grid.parent is not None and (b < 0 or s < 0 or d < 0):
+      b, s, d = grid.local_to_parent(b, s, d)
+      grid = grid.parent
+
+    delta_depth = point.grid.depth - grid.depth
+
+    if b < 0 or s < 0 or d < 0:
+      assert isinstance(grid, LodMeshFace)
+      point.update(grid=grid, b=b, s=s)
+      grid = grid.canonicalize_point(point).grid
+      b = float(point.b)
+      s = float(point.s)
+      d = float(point.d)
+      if b < 0 or s < 0 or d < 0:
+        raise ValueError(
+            "Failed to find a top-level face containing the point.")
+
+    for i in range(delta_depth):
+      if grid.children is None:
+        grid.subdivide()
+      grid = grid.child_containing(b, s, d)
+      b, s, d = grid.parent_to_local(b, s, d)
+
+    return point.update(grid=grid, b=b, s=s)
 
 
 class LodMeshFace(LodMeshSector, TessellationFace):

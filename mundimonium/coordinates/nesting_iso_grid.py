@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from mundimonium.coordinates.exceptions import EndOfMeshSurfaceException
 from mundimonium.coordinates.isometric import (
     IsometricGrid, IsometricPoint,
 )
@@ -9,6 +10,8 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from numbers import Number
 from typing import Any, override
+
+import functools
 import math
 
 
@@ -79,6 +82,7 @@ class NestingIsoGrid(IsometricGrid):
       self,
       *,
       resolution: int | None = None,
+      default_resolution: int = 2,
       _parent: NestingIsoGrid | None = None,
       _i_b: int = 0,
       _i_s: int = 0,
@@ -90,18 +94,23 @@ class NestingIsoGrid(IsometricGrid):
     subdivision and shouldn't normally be passed under other circumstances.
 
     Args:
-      resolution: Number of subdivisions per edge. Produces resolution^2
-                  children immediately if given. `None` for a leaf with no
-                  children.
-      _parent:    The grid this node is a child of, or `None` for a root.
-      _i_b:       This node's row index within `_parent` (unused for a root).
-      _i_s:       This node's column index within `_parent` (unused for a root).
-      _inverted:  Whether this node is a downward-pointing triangle within
-                  `_parent` (unused for a root).
-      **kwargs:   Forwarded up the method resolution order.
+      resolution:         Number of subdivisions per edge. Produces resolution^2
+                          children immediately if given. `None` for a leaf with
+                          no children.
+      default_resolution: The default subdivision resolution for this node's LOD
+                          tree if subdivided after construction. (Default `2`.)
+      _parent:            This node's parent node, or `None` for a root.
+      _i_b:               This node's row index within `_parent`. (Unused for a
+                          root.)
+      _i_s:               This node's column index within `_parent`. (Unused for
+                          a root.)
+      _inverted:          Whether this node is a downward-pointing triangle
+                          within `_parent`. (Unused for a root.)
+      **kwargs:           Forwarded up the method resolution order.
     """
     super().__init__(**kwargs)
     self._resolution = resolution
+    self._default_resolution = default_resolution
 
     # Position within parent (set internally during subdivision)
     self._parent = _parent
@@ -109,14 +118,34 @@ class NestingIsoGrid(IsometricGrid):
     self._i_s = _i_s
     self._inverted = _inverted
 
+    # Relationship to LOD tree
+    self._root: NestingIsoGrid
+    self._depth: int
+    if _parent is None:
+      self._root = self
+      self._depth = 0
+    else:
+      self._root = self._parent.root
+      self._depth = self._parent.depth + 1
+
     # Content
     self._items: list[SectorItem] = []
 
     # Children (None = not subdivided)
     self._children: list[NestingIsoGrid] | None = None
 
-    # Cache O(1) root transform and bounding box
+    # Cache root transform
+    self._root_offset_b: float
+    self._root_offset_s: float
+    self._root_offset_d: float
+    self._root_sign: float
     self._cache_root_transform()
+
+    # Cache bounding box
+    self._bb_xmin: float
+    self._bb_xmax: float
+    self._bb_ymin: float
+    self._bb_ymax: float
     self._cache_bounding_box()
 
     # Pre-create children if resolution is given
@@ -191,8 +220,13 @@ class NestingIsoGrid(IsometricGrid):
 
   @property
   def root(self) -> NestingIsoGrid:
-    """The root grid of this LOD tree."""
+    """The root grid of this LOD tree. (`self` if this is the root grid.)"""
     return self._root
+
+  @property
+  def depth(self) -> int:
+    """The depth of this node in the LOD tree. (`0` for the root.)"""
+    return self._depth
 
   @property
   def i_b(self) -> int:
@@ -243,13 +277,16 @@ class NestingIsoGrid(IsometricGrid):
     """Add a renderable item to this triangle."""
     self._items.append(item)
 
-  def subdivide(self, resolution: int) -> None:
+  def subdivide(self, resolution: int | None = None) -> None:
     """Subdivide this triangle into `resolution**2` children.
 
-    Each child is a :class:`NestingIsoGrid` with
-    `altitude = self.altitude / resolution`.  Children start as
-    leaves (no items, no further subdivision).
+    Each child is a `NestingIsoGrid` with
+    `altitude = self.altitude / resolution`.
+    Children start as leaves with no further subdivision.
     """
+    if resolution is None:
+      resolution = self._default_resolution
+
     if self._children is not None:
       raise ValueError("This grid has already been subdivided.")
     self._resolution = resolution
@@ -278,22 +315,38 @@ class NestingIsoGrid(IsometricGrid):
       raise ValueError("This grid has not been subdivided.")
     return self._children[self._flat_index(i_b, i_s, inverted)]
 
-  def child_containing(self, point: IsometricPoint) -> NestingIsoGrid:
-    """Find the child that contains a given :class:`IsometricPoint`.
+  @functools.singledispatchmethod
+  def child_containing(
+      self,
+      b: float | IsometricPoint,
+      s: float | None = None,
+      d: float | None = None) -> NestingIsoGrid:
+    """Find the child containing the given `IsometricPoint` or `(b,s,d)` coords.
 
     The point must be on this grid (`point.grid is self`).
     """
+    raise TypeError(
+        "Unexpected argument type(s) for 'NestingIsoGrid.child_containing'.")
+
+  @child_containing.register(IsometricPoint)
+  def _child_containing_point(self, point: IsometricPoint) -> NestingIsoGrid:
     if point.grid is not self:
-      raise KeyError("The provided IsometricPoint is not on this grid.")
+      raise KeyError("The provided 'IsometricPoint' is not on this grid.")
+
+    return self._child_containing_coords(point.b, point.s, point.d)
+
+  @child_containing.register(float)
+  def _child_containing_coords(
+      self, b: float, s: float, d: float) -> NestingIsoGrid:
     if self._children is None:
       raise ValueError("This grid has not been subdivided.")
 
     N = self._resolution
     scale = N / self._altitude
 
-    b_s = point.b * scale
-    s_s = point.s * scale
-    d_s = point.d * scale
+    b_s = b * scale
+    s_s = s * scale
+    d_s = d * scale
 
     i_b = max(0, min(int(b_s), N - 1))
     i_s = max(0, min(int(s_s), N - 1 - i_b))
@@ -429,7 +482,30 @@ class NestingIsoGrid(IsometricGrid):
 
     Mutates and returns `point`, not a copy.
     """
-    raise NotImplementedError()
+    b: float = float(point.b)
+    s: float = float(point.s)
+    d: float = float(point.d)
+    grid: NestingIsoGrid = point.grid
+
+    while grid.parent is not None and (b < 0 or s < 0 or d < 0):
+      b, s, d = grid.local_to_parent(b, s, d)
+      grid = grid.parent
+
+    delta_depth = point.grid.depth - grid.depth
+
+    if b < 0 or s < 0 or d < 0:
+      raise EndOfMeshSurfaceException(
+          "Cannot canonicalize an 'IsometricPoint' located outside the bounds "
+          "of a root 'NestingIsoGrid' that isn't part of a mesh. "
+          "(See 'LodMeshFace' for the mesh-aware implementation.)")
+
+    for i in range(delta_depth):
+      if grid.children is None:
+        grid.subdivide()
+      grid = grid.child_containing(b, s, d)
+      b, s, d = grid.parent_to_local(b, s, d)
+
+    return point.update(grid=grid, b=b, s=s)
 
   # ==================================================================
   # 2D rendering
@@ -505,7 +581,6 @@ class NestingIsoGrid(IsometricGrid):
       self._root_offset_s = 0.0
       self._root_offset_d = 0.0
       self._root_sign = 1.0
-      self._root = self
     else:
       h = self._altitude
       i_b, i_s, i_d = self._i_b, self._i_s, self.i_d
@@ -529,7 +604,6 @@ class NestingIsoGrid(IsometricGrid):
       self._root_offset_d = (self._parent._root_offset_d
                               + parent_sign * local_off_d)
       self._root_sign = parent_sign * local_sign
-      self._root = self._parent._root
 
   def _cache_bounding_box(self) -> None:
     """Compute the AABB in root Cartesian coordinates."""
