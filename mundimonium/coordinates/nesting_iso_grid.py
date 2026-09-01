@@ -422,6 +422,15 @@ class NestingIsoGrid(IsometricGrid):
     else:
       return IsometricPoint(self._root, root_b, root_s)
 
+  @classmethod
+  @override
+  def canonicalize_point(cls, point: IsometricPoint) -> IsometricPoint:
+    """Moves `point` to a new grid if located outside its current grid's bounds.
+
+    Mutates and returns `point`, not a copy.
+    """
+    raise NotImplementedError()
+
   # ==================================================================
   # 2D rendering
   # ==================================================================

@@ -182,7 +182,7 @@ class IsometricGrid(abc.ABC, HashByIndex):
     """
     return point if in_place else IsometricPoint(point.grid, point.b, point.s)
 
-  def to_world_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
+  def to_mesh_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
     """Converts a point on `self` to a tessellation-defined coordinate system.
 
     The dimensionality of the returned coordinate vector is
@@ -363,9 +363,9 @@ class IsometricPoint(HashByIndex):
     """
     return self.grid.project_onto_root_grid(self, in_place=in_place)
 
-  def to_world_coordinates(self) -> tuple[Number, ...]:
+  def to_mesh_coordinates(self) -> tuple[Number, ...]:
     """Converts this point to the world's (mesh-defined) coordinate system."""
-    return self.grid.to_world_coordinates(self)
+    return self.grid.to_mesh_coordinates(self)
 
   def distance_from(self, other: IsometricPoint) -> Number:
     """Distance from this point to `other` anywhere on the same mesh/world."""
@@ -472,16 +472,20 @@ class IsometricPoint(HashByIndex):
     """
     assert argc(b, s, d) == 2, \
         "move_to() must be provided exactly two of (b, s, d)."
+    altitude = self.grid.altitude
     if b is None:
-      self.b = self.grid.side_length - s - d
-      self.s = s
+      b = altitude - s - d
     elif s is None:
-      self.b = b
-      self.s = self.grid.side_length - b - d
-    else:  # d is None
-      self.b = b
-      self.s = s
+      s = altitude - b - d
+    # else d is None: b and s are both already given directly.
 
+    # Assign the private fields directly rather than going through the
+    # b/s property setters: those setters each adjust the *other*
+    # coordinate to move purely along one axis, which is the wrong
+    # behavior here -- b and s are both being set to independent,
+    # already-fully-determined target values.
+    self._b = b
+    self._s = s
     return self
 
   # def move_by(
@@ -529,19 +533,25 @@ class IsometricPoint(HashByIndex):
 
   @b.setter
   def b(self, b: Number) -> None:
-    """Sets `b`, adjusting `s` to hold `d` fixed."""
+    """Sets `b`, adjusting `s` to hold `d - s` fixed -- i.e. moves purely
+    along the B axis, leaving the Cartesian position along the other two
+    axes unchanged."""
     self._s -= 0.5 * (b - self._b)
     self._b = b
 
   @s.setter
   def s(self, s: Number) -> None:
-    """Sets `s`, adjusting `b` to hold `d` fixed."""
+    """Sets `s`, adjusting `b` to hold `b - d` fixed -- i.e. moves purely
+    along the S axis, leaving the Cartesian position along the other two
+    axes unchanged."""
     self._b -= 0.5 * (s - self._s)
     self._s = s
 
   @d.setter
   def d(self, d: Number) -> None:
-    """Sets `d`, adjusting `b` and `s` equally to compensate."""
+    """Sets `d`, adjusting `b` and `s` equally to hold `s - b` fixed -- i.e.
+    moves purely along the D axis, leaving the Cartesian position along the
+    other two axes unchanged."""
     delta = 0.5 * (d - self.d)
     self._b -= delta
     self._s -= delta
@@ -564,19 +574,25 @@ class IsometricVector:
   @classmethod
   def with_net_b_s(cls, delta_b: Number, delta_s: Number) -> IsometricVector:
     """Constructs a vector from its net changes along the B and S axes."""
-    return IsometricVector(delta_b - 0.5 * delta_s, delta_s - 0.5 * delta_b)
+    # Inverts delta_b = b - 0.5*s, delta_s = s - 0.5*b for (b, s).
+    return IsometricVector(
+        (4 * delta_b + 2 * delta_s) / 3, (4 * delta_s + 2 * delta_b) / 3)
 
   @classmethod
   def with_net_b_d(cls, delta_b: Number, delta_d: Number) -> IsometricVector:
     """Constructs a vector from its net changes along the B and D axes."""
+    # Inverts delta_b = b - 0.5*s, delta_d = -0.5*(b+s) for (b, s).
     return IsometricVector(
-        delta_b - 0.5 * delta_d, -0.5 * (delta_b + delta_d))
+        (2 * (delta_b - delta_d)) / 3,
+        (-2 * delta_b - 4 * delta_d) / 3)
 
   @classmethod
   def with_net_s_d(cls, delta_s: Number, delta_d: Number) -> IsometricVector:
     """Constructs a vector from its net changes along the S and D axes."""
+    # Inverts delta_s = s - 0.5*b, delta_d = -0.5*(b+s) for (b, s).
     return IsometricVector(
-        -0.5 * (delta_s + delta_d), delta_s - 0.5 * delta_d)
+        (-2 * delta_s - 4 * delta_d) / 3,
+        (2 * (delta_s - delta_d)) / 3)
 
   @classmethod
   def between_points(
@@ -651,28 +667,43 @@ class IsometricVector:
   @delta_b.setter
   def delta_b(self, delta_b: Number) -> None:
     """Sets the vector's net change along the B axis."""
-    self.b_component += (delta_b - self.delta_b)
+    # `b_component`'s setter also shifts `s_component` by -0.5x the raw
+    # component delta (to hold d_component at 0), which itself changes
+    # delta_b by another -0.5 * -0.5x = +0.25x -- so a raw component delta of
+    # x actually moves delta_b by 1.25x. Scale by 1/1.25 = 0.8 to compensate.
+    self.b_component += 0.8 * (delta_b - self.delta_b)
 
-  @delta_b.setter
+  @delta_s.setter
   def delta_s(self, delta_s: Number) -> None:
     """Sets the vector's net change along the S axis."""
-    self.s_component += (delta_s - self.delta_s)
+    # See `delta_b`'s setter: the same 1.25x coupling applies here.
+    self.s_component += 0.8 * (delta_s - self.delta_s)
 
   @delta_d.setter
   def delta_d(self, delta_d: Number) -> None:
     """Sets the vector's net change along the D axis."""
     self._length_dirty = True
-    delta_delta_b_s = 0.5 * (delta_d - self.delta_d)
+    # delta_d = -0.5*(b_component + s_component), and both components shift
+    # by the same -delta_delta_b_s, so delta_d moves by exactly
+    # +delta_delta_b_s -- no extra scaling needed (unlike delta_b/delta_s).
+    delta_delta_b_s = delta_d - self.delta_d
     self._b_component -= delta_delta_b_s
     self._s_component -= delta_delta_b_s
 
   @property
   def length(self) -> Number:
     """This vector's length, computed lazily and cached until it's invalidated.
+
+    Matches `IsometricGrid.local_distance`'s formula applied to
+    `(delta_b, delta_s)` -- the vector's net coordinate changes -- so that
+    `(p2 - p1).length == p1.distance_from(p2)` for any two points `p1`, `p2`
+    on the same grid. (Using the raw `(b_component, s_component)` fields
+    directly here would *not* satisfy that identity, since the two are
+    related by a non-uniform linear transform, not a simple rescaling.)
     """
     if self._length_dirty:
-      self._cached_length = \
-          isometric_distance(self._b_component, self._s_component)
+      self._cached_length = isometric_distance(
+          self.delta_b - 0.5 * self.delta_s, self.delta_s - 0.5 * self.delta_b)
       self._length_dirty = False
     return self._cached_length
 
@@ -680,8 +711,13 @@ class IsometricVector:
   def length(self, length) -> None:
     """Rescales this vector in place to the given length."""
     scale_factor = length / self.length
-    self.b_component *= scale_factor
-    self.s_component *= scale_factor
+    # Scale the raw private components directly, not via the b_component/
+    # s_component setters -- those setters shift the *other* component to
+    # hold d_component at 0 (correct for changing just one component), but
+    # here both need to scale together, so that side effect would corrupt
+    # the result (each `*=` would perturb what the other already set).
+    self._b_component *= scale_factor
+    self._s_component *= scale_factor
     # NOTE: This may cause rare issues with floating-point errors, but the
     # alternative of setting `self._length_dirth = True` would run the same
     # risks, albeit in different situations, should the call site assume the

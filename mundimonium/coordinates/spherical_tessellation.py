@@ -50,7 +50,7 @@ class SphericalTessellation(Tessellation):
 
   @property
   def center(self) -> tuple[float, float, float]:
-    return self._radius
+    return self._center
 
   def _spherical_to_3d(
       self, colatitude: float, longitude: float,

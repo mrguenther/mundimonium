@@ -10,9 +10,21 @@ from mundimonium.coordinates.isometric import (
 
 from numbers import Number
 from typing import override
+import math
 import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
+
+
+# A tiny, fixed rotation applied to the ray direction in
+# `geodesically_canonicalize_point` before tracing. Its only purpose is to
+# generically avoid the ray passing *exactly* through a mesh vertex (see that
+# method's docstring) -- it's small enough to leave every real result
+# unaffected (~1e-7 radians), and being a fixed constant rather than
+# query-dependent, it doesn't affect how smoothly the result varies with the
+# query direction: two nearby queries stay exactly as close after the
+# rotation as before it.
+_DEGENERATE_RAY_NUDGE_RADIANS = 1e-7
 
 
 class GenericTessellation(Tessellation):
@@ -416,6 +428,21 @@ class GenericTessellation(Tessellation):
     the true shortest path everywhere except where that path would need to
     bend around a mesh vertex with nonzero angle defect.
 
+    A ray that passes *exactly* through a mesh vertex is a genuine
+    degenerate case (every edge touching that vertex reports the same
+    crossing distance, and after landing there every edge reports distance
+    0, so there's no well-defined "next edge" to cross), so the ray
+    direction is nudged by a fixed, tiny rotation before tracing to avoid it
+    generically -- this doesn't materially affect any result, and being a
+    fixed offset rather than a query-dependent one, doesn't affect how
+    smoothly the result varies with the query direction either.
+
+    (A ray that merely *grazes* a vertex closely, without hitting it
+    exactly, is a different matter: which side it passes on is a genuine,
+    unavoidable discontinuity for straightest geodesics on a curved
+    polyhedral mesh -- not something this nudge, or any tie-breaking rule,
+    can smooth over. That case is left as-is.)
+
     Mutates and returns `point`, not a copy.
 
     Raises:
@@ -430,6 +457,13 @@ class GenericTessellation(Tessellation):
     target_2d = wb * p_local[0] + ws * p_local[1] + wd * p_local[2]
     curr_pos = (p_local[0] + p_local[1] + p_local[2]) / 3.0
     direction = target_2d - curr_pos
+
+    nudge_cos = math.cos(_DEGENERATE_RAY_NUDGE_RADIANS)
+    nudge_sin = math.sin(_DEGENERATE_RAY_NUDGE_RADIANS)
+    direction = np.array([
+        nudge_cos * direction[0] - nudge_sin * direction[1],
+        nudge_sin * direction[0] + nudge_cos * direction[1],
+    ])
 
     for _ in range(max_steps):
       p_local = self._canonical_local_frame(curr_face)

@@ -50,7 +50,7 @@ class LodMeshSector(NestingIsoGrid):
     )
 
   @override
-  def to_world_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
+  def to_mesh_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
     """Converts a point on `self` to a tessellation-defined coordinate system.
 
     The length of the returned coordinate vector is tessellation-defined, as is
@@ -62,6 +62,15 @@ class LodMeshSector(NestingIsoGrid):
     """
     return self.root.tessellation.coords_at_point(
         self.project_onto_root_grid(point))
+
+  @classmethod
+  @override
+  def canonicalize_point(cls, point: IsometricPoint) -> IsometricPoint:
+    """Moves `point` to a new grid if located outside its current grid's bounds.
+
+    Mutates and returns `point`, not a copy.
+    """
+    raise NotImplementedError()
 
 
 class LodMeshFace(LodMeshSector, TessellationFace):
@@ -82,7 +91,7 @@ class LodMeshFace(LodMeshSector, TessellationFace):
     return LodMeshSector
 
   @override
-  def to_world_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
+  def to_mesh_coordinates(self, point: IsometricPoint) -> tuple[Number, ...]:
     """Converts a point on `self` to a tessellation-defined coordinate system.
 
     The length of the returned coordinate vector is tessellation-defined, as is
@@ -93,4 +102,13 @@ class LodMeshFace(LodMeshSector, TessellationFace):
     implicitly equal to the world's radius.
     """
     return self.tessellation.coords_at_point(point)
+
+  @classmethod
+  @override
+  def canonicalize_point(cls, point: IsometricPoint) -> IsometricPoint:
+    """Moves `point` to a new grid if located outside its current grid's bounds.
+
+    Mutates and returns `point`, not a copy.
+    """
+    return TessellationFace.canonicalize_point(point)
 
