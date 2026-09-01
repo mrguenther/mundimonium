@@ -438,10 +438,10 @@ class TessellationFace(IsometricGrid):
         project_to_face_on_edge = IsometricDirection.B
     elif point.s < 0:
       if point.b <= altitude and point.d <= altitude:
-        project_to_face_on_edge = IsometricDirection.B
+        project_to_face_on_edge = IsometricDirection.S
     elif point.d < 0:
       if point.b <= altitude and point.s <= altitude:
-        project_to_face_on_edge = IsometricDirection.B
+        project_to_face_on_edge = IsometricDirection.D
     else:
       return point
 

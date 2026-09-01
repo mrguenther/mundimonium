@@ -25,12 +25,12 @@ _BASE_FACES = [
 ]
 
 
-def build_icosahedron():
+def build_icosahedron(face_type=None):
   """A `GenericTessellation` populated as a regular icosahedron.
 
   Returns (tessellation, vertices, faces).
   """
-  tess = GenericTessellation()
+  tess = GenericTessellation(face_type=face_type)
   verts = [TessellationVertex(list(v)) for v in _BASE_RAW]
   faces = [
       tess.add_face([verts[a], verts[b], verts[c]])

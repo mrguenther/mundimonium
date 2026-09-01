@@ -2,6 +2,7 @@ import math
 
 import pytest
 
+from mundimonium.coordinates.exceptions import EndOfMeshSurfaceException
 from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.nesting_iso_grid import (
     NestingIsoGrid, RenderItem, SectorItem, isometric_to_cartesian,
@@ -319,3 +320,140 @@ def test_repr_reflects_orientation_and_state():
   assert "v " in repr(child)
   assert repr(grid).startswith("NestingIsoGrid(^")
   assert "res=2" in repr(grid)
+
+
+# ---------------------------------------------------------------------------
+# depth
+# ---------------------------------------------------------------------------
+
+def test_depth_increases_with_nesting():
+  grid = NestingIsoGrid(resolution=2, altitude=1.0)
+  child = grid.children[0]
+  child.subdivide(resolution=2)
+  grandchild = child.children[0]
+  assert grid.depth == 0
+  assert child.depth == 1
+  assert grandchild.depth == 2
+
+
+# ---------------------------------------------------------------------------
+# default_resolution
+# ---------------------------------------------------------------------------
+
+def test_default_resolution_defaults_to_2_at_the_root():
+  grid = NestingIsoGrid(altitude=1.0)
+  grid.subdivide()
+  assert grid.resolution == 2
+
+
+def test_default_resolution_explicit_at_the_root():
+  grid = NestingIsoGrid(altitude=1.0, default_resolution=5)
+  grid.subdivide()
+  assert grid.resolution == 5
+
+
+def test_default_resolution_inherited_by_children_from_root():
+  grid = NestingIsoGrid(resolution=2, altitude=1.0, default_resolution=5)
+  child = grid.children[0]
+  child.subdivide()
+  assert child.resolution == 5
+
+
+def test_default_resolution_inherited_transitively_by_grandchildren():
+  grid = NestingIsoGrid(resolution=2, altitude=1.0, default_resolution=5)
+  child = grid.children[0]
+  child.subdivide(resolution=2)  # explicit at this level
+  grandchild = child.children[0]
+  grandchild.subdivide()  # not explicit -> inherits from child, not the root
+  assert grandchild.resolution == 5
+
+
+# ---------------------------------------------------------------------------
+# child_containing float overload
+# ---------------------------------------------------------------------------
+
+def test_child_containing_float_overload_matches_point_overload():
+  grid = NestingIsoGrid(resolution=4, altitude=1.0)
+  p = IsometricPoint(grid, 0.05, 0.05)
+  by_point = grid.child_containing(p)
+  by_coords = grid.child_containing(p.b, p.s, p.d)
+  assert by_coords is by_point
+
+
+def test_child_containing_float_overload_requires_subdivision():
+  grid = NestingIsoGrid(altitude=1.0)
+  with pytest.raises(ValueError):
+    grid.child_containing(0.1, 0.1, 0.1)
+
+
+# ---------------------------------------------------------------------------
+# canonicalize_point
+# ---------------------------------------------------------------------------
+
+def test_canonicalize_point_is_noop_when_already_in_bounds():
+  grid = NestingIsoGrid(resolution=2, altitude=1.0)
+  child = grid.children[0]
+  p = IsometricPoint(child, 0.1 * child.altitude, 0.1 * child.altitude)
+  result = NestingIsoGrid.canonicalize_point(p)
+  assert result is p
+  assert p.grid is child
+  assert p.b == pytest.approx(0.1 * child.altitude)
+  assert p.s == pytest.approx(0.1 * child.altitude)
+
+
+def test_canonicalize_point_moves_to_a_sibling_within_the_same_tree():
+  grid = NestingIsoGrid(resolution=4, altitude=1.0)
+  # (i_b=1, i_s=0) borders an interior sibling edge (not the tree's own outer
+  # boundary), so a small negative excursion in b should land on that sibling
+  # rather than escaping the whole tree.
+  child = grid.child_at(1, 0, False)
+  alt = child.altitude
+  p = IsometricPoint(child, -0.01 * alt, 0.3 * alt)
+  expected_root = child.to_root_isometric(p.b, p.s, p.d)
+
+  NestingIsoGrid.canonicalize_point(p)
+
+  assert p.grid is not child
+  assert p.grid.parent is grid
+  assert p.grid.to_root_isometric(p.b, p.s, p.d) == pytest.approx(
+      expected_root, abs=1e-9)
+  assert -1e-9 <= p.b <= p.grid.altitude + 1e-9
+  assert -1e-9 <= p.s <= p.grid.altitude + 1e-9
+  assert -1e-9 <= p.d <= p.grid.altitude + 1e-9
+
+
+def test_canonicalize_point_auto_subdivides_unvisited_sibling_using_default_resolution():
+  grid = NestingIsoGrid(resolution=2, altitude=1.0, default_resolution=3)
+  child_a = grid.children[0]
+  child_b = grid.children[1]
+  child_a.subdivide(resolution=2)
+  grandchild = child_a.children[0]
+  assert child_b.children is None
+
+  # The exact isometric coordinates of `child_b`'s centroid, re-expressed in
+  # `grandchild`'s local frame. This lands out of `grandchild`'s own bounds,
+  # since the point actually lies within `child_b`, a different top-level
+  # child that hasn't been subdivided yet.
+  root_coords = child_b.local_to_parent(
+      child_b.apothem, child_b.apothem, child_b.apothem)
+  child_a_coords = child_a.parent_to_local(*root_coords)
+  grandchild_coords = grandchild.parent_to_local(*child_a_coords)
+
+  p = IsometricPoint(grandchild, grandchild_coords[0], grandchild_coords[1])
+  NestingIsoGrid.canonicalize_point(p)
+
+  assert child_b.children is not None  # auto-subdivided
+  assert child_b.resolution == 3  # used default_resolution, not root's
+  assert p.grid.depth == 2
+  assert p.grid.root is grid
+  assert p.grid.to_root_isometric(p.b, p.s, p.d) == pytest.approx(
+      root_coords, abs=1e-9)
+
+
+def test_canonicalize_point_raises_past_the_root_boundary():
+  grid = NestingIsoGrid(resolution=2, altitude=1.0)
+  child = grid.children[0]
+  alt = child.altitude
+  p = IsometricPoint(child, -10 * alt, -10 * alt)
+  with pytest.raises(EndOfMeshSurfaceException):
+    NestingIsoGrid.canonicalize_point(p)

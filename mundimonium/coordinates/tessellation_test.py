@@ -264,22 +264,29 @@ def test_canonicalize_point_rejects_non_face_grid():
     TessellationFace.canonicalize_point(p)
 
 
+@pytest.mark.parametrize("edge", list(IsometricDirection))
 def test_canonicalize_point_single_edge_crossing_matches_projection(
-    icosahedron):
+    icosahedron, edge):
+  # Regression test: covering all three edges (not just B) is what catches
+  # bugs like `canonicalize_point` picking the wrong edge for the S/D cases.
   _, _, faces = icosahedron
   face = faces[0]
   alt = face.altitude
-  new_grid = face.face_on_edge(IsometricDirection.B)
+  new_grid = face.face_on_edge(edge)
 
-  # A point just past edge B, but still within bounds along s and d --
-  # the "cheap" single-hop case.
-  s, d = 0.3 * alt, 0.3 * alt
-  b = -0.01 * alt
-  original = IsometricPoint(face, b, alt - b - d)  # s derived to hit exactly
-  expected = IsometricPoint(face, b, alt - b - d).project_onto_adjacent_grid(
-      new_grid)
+  # A point just past the given edge, but still within bounds along the
+  # other two -- the "cheap" single-hop case.
+  if edge == IsometricDirection.B:
+    b, s = -0.01 * alt, 0.3 * alt
+  elif edge == IsometricDirection.S:
+    b, s = 0.3 * alt, -0.01 * alt
+  else:  # D: push b + s just past alt, so d = alt - b - s is negative.
+    b, s = 0.6 * alt, 0.41 * alt
 
-  p = IsometricPoint(face, b, alt - b - d)
+  original = IsometricPoint(face, b, s)
+  expected = IsometricPoint(face, b, s).project_onto_adjacent_grid(new_grid)
+
+  p = IsometricPoint(face, b, s)
   TessellationFace.canonicalize_point(p)
   assert p.grid is expected.grid
   assert p.b == pytest.approx(expected.b)

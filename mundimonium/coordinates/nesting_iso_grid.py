@@ -82,7 +82,7 @@ class NestingIsoGrid(IsometricGrid):
       self,
       *,
       resolution: int | None = None,
-      default_resolution: int = 2,
+      default_resolution: int | None = None,
       _parent: NestingIsoGrid | None = None,
       _i_b: int = 0,
       _i_s: int = 0,
@@ -98,7 +98,9 @@ class NestingIsoGrid(IsometricGrid):
                           children immediately if given. `None` for a leaf with
                           no children.
       default_resolution: The default subdivision resolution for this node's LOD
-                          tree if subdivided after construction. (Default `2`.)
+                          tree if subdivided after construction. Defaults to
+                          `_parent`'s own `default_resolution` if this node has
+                          a parent, else `2` for a root.
       _parent:            This node's parent node, or `None` for a root.
       _i_b:               This node's row index within `_parent`. (Unused for a
                           root.)
@@ -109,6 +111,8 @@ class NestingIsoGrid(IsometricGrid):
       **kwargs:           Forwarded up the method resolution order.
     """
     super().__init__(**kwargs)
+    if default_resolution is None:
+      default_resolution = _parent._default_resolution if _parent is not None else 2
     self._resolution = resolution
     self._default_resolution = default_resolution
 
