@@ -274,6 +274,34 @@ class Tessellation(abc.ABC):
     """
     raise NotImplementedError()
 
+  @abc.abstractmethod
+  def shortest_path_by_segment(
+      self,
+      p1: IsometricPoint,
+      p2: IsometricPoint,
+  ) -> list[tuple[IsometricPoint, IsometricPoint]]:
+    """Traces the geodesic path from p1 to p2, split into per-grid segments.
+
+    Each returned `(start, end)` tuple is a straight-line segment lying
+    entirely within one grid (`start.grid is end.grid`). If the whole path
+    lies within a single grid, the result is a single tuple.
+
+    Wherever the path crosses an edge or vertex shared by two grids, that
+    crossing is represented by the boundary point appearing twice -- once as
+    the endpoint of the segment on each side -- so that consecutive segments
+    "hand off" at (up to floating-point precision) the same physical
+    location, each expressed in its own grid's local coordinates:
+    ```
+    ..., (point_on_a, point_at_edge_on_a), (point_at_edge_on_b, point_on_b), ...
+    ```
+    Segments too short to be anything but a precision artifact (e.g. an
+    endpoint that starts exactly on an edge/vertex and immediately leaves
+    that grid) are omitted.
+
+    Subclasses should override this method with specific path tracers.
+    """
+    raise NotImplementedError()
+
 
 class TessellationVertex(HashByIndex):
   """A vertex of a `Tessellation`, positioned in 3D projection space."""

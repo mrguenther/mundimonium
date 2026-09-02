@@ -10,15 +10,23 @@ from mundimonium.coordinates.tessellation import TessellationVertex
 
 
 # `icosahedron` fixture comes from conftest.py.
+#
+# `generic_mesh` (also from conftest.py) is parametrized over every
+# registered `GenericTessellationFixture` subclass, so tests using it
+# automatically pick up any new mesh shape registered in the future with no
+# changes needed here. Tests that assert something true of *any*
+# GenericTessellation mesh should prefer it over the raw `icosahedron`
+# fixture; tests that rely on icosahedron-specific facts (e.g. its exact
+# antipodal symmetry) should keep using `icosahedron` directly.
 
 
 # ---------------------------------------------------------------------------
 # Abstract-ish stubs
 # ---------------------------------------------------------------------------
 
-def test_coords_related_methods_are_not_implemented(icosahedron):
-  tess, _, faces = icosahedron
-  point = faces[0].centroid_local_coords
+def test_coords_related_methods_are_not_implemented(generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  point = generic_mesh.any_face().centroid_local_coords
   with pytest.raises(NotImplementedError):
     tess.new_point_at_coords(0.0, 0.0)
   with pytest.raises(NotImplementedError):
@@ -55,8 +63,8 @@ def test_build_solvers_requires_at_least_one_face():
 # Local 2D <-> barycentric conversions
 # ---------------------------------------------------------------------------
 
-def test_local_2d_barycentric_round_trip(icosahedron):
-  tess, _, _ = icosahedron
+def test_local_2d_barycentric_round_trip(generic_mesh):
+  tess, _, _ = generic_mesh.build()
   tess._build_solvers()
   rng = np.random.default_rng(0)
   for _ in range(50):
@@ -67,9 +75,8 @@ def test_local_2d_barycentric_round_trip(icosahedron):
     assert w_back == pytest.approx(tuple(w), abs=1e-9)
 
 
-def test_canonical_local_frame_round_trip_matches_face_geometry(icosahedron):
-  _, _, faces = icosahedron
-  face = faces[3]
+def test_canonical_local_frame_round_trip_matches_face_geometry(generic_mesh):
+  face = generic_mesh.any_face()
   frame = GenericTessellation._canonical_local_frame(face)
   assert frame[1, 0] == pytest.approx(face.side_length)
   assert frame[2, 1] == pytest.approx(face.altitude)
@@ -88,30 +95,31 @@ def test_canonical_local_frame_round_trip_matches_face_geometry(icosahedron):
 # ---------------------------------------------------------------------------
 
 def test_geodesic_distance_same_face_matches_local_isometric_distance(
-    icosahedron):
-  _, _, faces = icosahedron
-  tess, _, _ = icosahedron
-  face = faces[0]
-  p1 = IsometricPoint(face, 0.2, 0.3)
-  p2 = IsometricPoint(face, 0.5, 0.1)
+    generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
+  alt = face.altitude
+  p1 = IsometricPoint(face, 0.2 * alt, 0.3 * alt)
+  p2 = IsometricPoint(face, 0.5 * alt, 0.1 * alt)
   assert tess.geodesic_distance(p1, p2) == pytest.approx(
       p1.distance_from(p2))
 
 
-def test_geodesic_distance_adjacent_faces_matches_projection(icosahedron):
-  tess, _, faces = icosahedron
-  face = faces[0]
-  neighbor = face.face_on_edge(IsometricDirection.B)
+def test_geodesic_distance_adjacent_faces_matches_projection(generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face, neighbor = generic_mesh.two_adjacent_faces()
   p1 = face.centroid_local_coords
   p2 = neighbor.centroid_local_coords
   expected = p1.project_onto_adjacent_grid(neighbor).distance_from(p2)
   assert tess.geodesic_distance(p1, p2) == pytest.approx(expected)
 
 
-def test_geodesic_distance_is_symmetric_and_zero_for_same_point(icosahedron):
-  tess, _, faces = icosahedron
-  p1 = faces[0].centroid_local_coords
-  p2 = faces[10].centroid_local_coords  # far away on the mesh
+def test_geodesic_distance_is_symmetric_and_zero_for_same_point(
+    generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face_a, face_b = generic_mesh.two_far_apart_faces()
+  p1 = face_a.centroid_local_coords
+  p2 = face_b.centroid_local_coords
   d12 = tess.geodesic_distance(p1, p2)
   d21 = tess.geodesic_distance(p2, p1)
   assert d12 == pytest.approx(d21, rel=1e-6)
@@ -120,15 +128,13 @@ def test_geodesic_distance_is_symmetric_and_zero_for_same_point(icosahedron):
 
 
 def test_geodesic_distance_between_neighbors_is_the_right_order_of_magnitude(
-    icosahedron):
+    generic_mesh):
   # The Heat Method is only approximate -- and known to be less accurate for
-  # short/near-field distances, especially on a coarse (unsubdivided,
-  # 20-face) mesh like this one -- so this only checks it's in the right
-  # ballpark relative to the exact "project across the shared edge"
-  # distance, not tightly accurate.
-  tess, _, faces = icosahedron
-  face = faces[0]
-  neighbor = face.face_on_edge(IsometricDirection.B)
+  # short/near-field distances, especially on a coarse mesh -- so this only
+  # checks it's in the right ballpark relative to the exact "project across
+  # the shared edge" distance, not tightly accurate.
+  tess, _, _ = generic_mesh.build()
+  face, neighbor = generic_mesh.two_adjacent_faces()
   p1 = face.centroid_local_coords
   p2 = neighbor.centroid_local_coords
   exact = p1.project_onto_adjacent_grid(neighbor).distance_from(p2)
@@ -145,18 +151,20 @@ def test_geodesic_distance_between_neighbors_is_the_right_order_of_magnitude(
 # shortest_path
 # ---------------------------------------------------------------------------
 
-def test_shortest_path_same_face_is_trivial(icosahedron):
-  tess, _, faces = icosahedron
-  face = faces[0]
-  p1 = IsometricPoint(face, 0.1, 0.1)
-  p2 = IsometricPoint(face, 0.4, 0.2)
+def test_shortest_path_same_face_is_trivial(generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
+  alt = face.altitude
+  p1 = IsometricPoint(face, 0.1 * alt, 0.1 * alt)
+  p2 = IsometricPoint(face, 0.4 * alt, 0.2 * alt)
   assert tess.shortest_path(p1, p2) == [p1, p2]
 
 
-def test_shortest_path_endpoints_match_request(icosahedron):
-  tess, _, faces = icosahedron
-  p1 = faces[0].centroid_local_coords
-  p2 = faces[10].centroid_local_coords
+def test_shortest_path_endpoints_match_request(generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face_a, face_b = generic_mesh.two_far_apart_faces()
+  p1 = face_a.centroid_local_coords
+  p2 = face_b.centroid_local_coords
   path = tess.shortest_path(p1, p2)
   assert len(path) >= 2
   assert path[0] is p1
@@ -165,10 +173,11 @@ def test_shortest_path_endpoints_match_request(icosahedron):
   assert path[-1].s == pytest.approx(p2.s, abs=1e-6)
 
 
-def test_shortest_path_stays_within_valid_local_coordinates(icosahedron):
-  tess, _, faces = icosahedron
-  p1 = faces[0].centroid_local_coords
-  p2 = faces[15].centroid_local_coords
+def test_shortest_path_stays_within_valid_local_coordinates(generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face_a, face_b = generic_mesh.two_far_apart_faces()
+  p1 = face_a.centroid_local_coords
+  p2 = face_b.centroid_local_coords
   path = tess.shortest_path(p1, p2)
   for point in path:
     alt = point.grid.altitude
@@ -182,9 +191,9 @@ def test_shortest_path_stays_within_valid_local_coordinates(icosahedron):
 # ---------------------------------------------------------------------------
 
 def test_geodesically_canonicalize_point_one_hop_matches_projection(
-    icosahedron):
-  tess, _, faces = icosahedron
-  face = faces[0]
+    generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
   alt = face.altitude
   new_grid = face.face_on_edge(IsometricDirection.S)
 
@@ -200,10 +209,9 @@ def test_geodesically_canonicalize_point_one_hop_matches_projection(
 
 
 def test_geodesically_canonicalize_point_is_idempotent_when_in_bounds(
-    icosahedron):
-  _, _, faces = icosahedron
-  tess, _, _ = icosahedron
-  face = faces[2]
+    generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
   alt = face.altitude
   p = IsometricPoint(face, 0.3 * alt, 0.3 * alt)
   tess.geodesically_canonicalize_point(p)
@@ -213,9 +221,9 @@ def test_geodesically_canonicalize_point_is_idempotent_when_in_bounds(
 
 
 def test_geodesically_canonicalize_point_lands_in_bounds_far_away(
-    icosahedron):
-  tess, _, faces = icosahedron
-  face = faces[5]
+    generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
   alt = face.altitude
   p = IsometricPoint(face, -4.3 * alt, -2.1 * alt)
   tess.geodesically_canonicalize_point(p)
@@ -225,15 +233,17 @@ def test_geodesically_canonicalize_point_lands_in_bounds_far_away(
 
 
 def test_geodesically_canonicalize_point_handles_ray_through_a_vertex(
-    icosahedron):
+    generic_mesh):
   # Regression test: a ray whose direction is exactly symmetric (here,
   # b == s) can pass precisely through a shared mesh vertex, where every
   # edge touching that vertex reports the same crossing distance -- and,
   # after landing exactly on it, every edge reports distance 0, leaving no
   # well-defined next edge to cross. `_DEGENERATE_RAY_NUDGE_RADIANS` guards
-  # against exactly this.
-  tess, _, faces = icosahedron
-  face = faces[0]
+  # against exactly this. This is a property of any equilateral face's own
+  # local (b, s, d) frame (b == s always aims at the same vertex, regardless
+  # of mesh topology), so it applies to any registered fixture.
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
   alt = face.altitude
   p = IsometricPoint(face, -3 * alt, -3 * alt)
   tess.geodesically_canonicalize_point(p)
@@ -248,6 +258,12 @@ def test_geodesically_canonicalize_point_is_smooth_near_a_vertex_crossing(
   # direction that grazes a mesh vertex -- not jump to a wrong/invalid
   # result exactly at that angle (see the regression test above) or to a
   # wildly different one immediately next to it.
+  #
+  # Icosahedron-specific (not parametrized over `generic_mesh`): the angle
+  # window tested is small enough to stay on one face only because this
+  # mesh's vertices all have the same gentle (valence-5, 60-degree-defect)
+  # curvature. A mesh with sharper vertices (e.g. a tetrahedron-cap apex)
+  # can legitimately cross into a neighboring face within the same window.
   tess, _, faces = icosahedron
   face = faces[0]
   alt = face.altitude
@@ -269,6 +285,9 @@ def test_geodesically_canonicalize_point_is_smooth_near_a_vertex_crossing(
 
 
 def test_geodesically_canonicalize_point_raises_at_mesh_boundary():
+  # Deliberately a single, disconnected triangle (not one of the registered
+  # `GenericTessellationFixture` mesh shapes) -- this tests open-boundary
+  # behavior specifically, not "does this work across weird mesh shapes".
   v1 = TessellationVertex([0, 0, 0])
   v2 = TessellationVertex([1, 0, 0])
   v3 = TessellationVertex([0.5, 1, 0])
@@ -280,10 +299,116 @@ def test_geodesically_canonicalize_point_raises_at_mesh_boundary():
 
 
 def test_geodesically_canonicalize_point_raises_if_max_steps_exceeded(
-    icosahedron):
-  tess, _, faces = icosahedron
-  face = faces[0]
+    generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
   alt = face.altitude
   p = IsometricPoint(face, -4.3 * alt, -2.1 * alt)
   with pytest.raises(RuntimeError):
     tess.geodesically_canonicalize_point(p, max_steps=1)
+
+
+# ---------------------------------------------------------------------------
+# shortest_path_by_segment
+# ---------------------------------------------------------------------------
+
+def test_shortest_path_by_segment_same_face_is_a_single_segment(
+    generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
+  alt = face.altitude
+  p1 = IsometricPoint(face, 0.1 * alt, 0.1 * alt)
+  p2 = IsometricPoint(face, 0.3 * alt, 0.2 * alt)
+  assert tess.shortest_path_by_segment(p1, p2) == [(p1, p2)]
+
+
+def test_shortest_path_by_segment_adjacent_faces_cross_directly(
+    generic_mesh):
+  # A single edge crossing should produce exactly two segments, meeting
+  # exactly at the shared edge.
+  tess, _, _ = generic_mesh.build()
+  face, neighbor = generic_mesh.two_adjacent_faces()
+  p1 = face.centroid_local_coords
+  p2 = neighbor.centroid_local_coords
+  segs = tess.shortest_path_by_segment(p1, p2)
+
+  assert len(segs) == 2
+  assert segs[0][0] is p1
+  assert segs[0][1].grid is face
+  assert segs[1][0].grid is neighbor
+  assert segs[1][1] is p2
+  expected = segs[0][1].project_onto_adjacent_grid(neighbor)
+  assert segs[1][0].b == pytest.approx(expected.b)
+  assert segs[1][0].s == pytest.approx(expected.s)
+
+
+def test_shortest_path_by_segment_far_apart_endpoints_match_request(
+    generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face_a, face_b = generic_mesh.two_far_apart_faces()
+  p1 = face_a.centroid_local_coords
+  p2 = face_b.centroid_local_coords
+  segs = tess.shortest_path_by_segment(p1, p2)
+  assert len(segs) >= 1
+  assert segs[0][0] is p1
+  assert segs[-1][1] is p2
+
+
+def test_shortest_path_by_segment_each_segment_stays_within_one_grid(
+    generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face_a, face_b = generic_mesh.two_far_apart_faces()
+  p1 = face_a.centroid_local_coords
+  p2 = face_b.centroid_local_coords
+  segs = tess.shortest_path_by_segment(p1, p2)
+  for a, b in segs:
+    assert a.grid is b.grid
+
+
+def test_shortest_path_by_segment_boundary_crossings_agree_across_grids(
+    generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face_a, face_b = generic_mesh.two_far_apart_faces()
+  p1 = face_a.centroid_local_coords
+  p2 = face_b.centroid_local_coords
+  segs = tess.shortest_path_by_segment(p1, p2)
+  for (_, exit_point), (entry_point, _) in zip(segs, segs[1:]):
+    projected = exit_point.project_onto_adjacent_grid(entry_point.grid)
+    assert projected.b == pytest.approx(entry_point.b, abs=1e-6)
+    assert projected.s == pytest.approx(entry_point.s, abs=1e-6)
+
+
+def test_shortest_path_by_segment_endpoints_are_not_minuscule(generic_mesh):
+  # The first and last segments are never minuscule (leading/trailing
+  # near-zero segments -- e.g. an endpoint that started exactly on an
+  # edge/vertex -- are dropped). A *middle* segment can legitimately still
+  # be exactly zero-length, if the taut path happens to pass precisely
+  # through a mesh vertex partway along an otherwise-straight stretch --
+  # that's kept as-is (not filtered), since dropping it would splice its
+  # two neighbors together directly, and they generally aren't themselves
+  # adjacent faces.
+  tess, _, _ = generic_mesh.build()
+  face_a, face_b = generic_mesh.two_far_apart_faces()
+  p1 = face_a.centroid_local_coords
+  p2 = face_b.centroid_local_coords
+  segs = tess.shortest_path_by_segment(p1, p2)
+  a0, b0 = segs[0]
+  assert a0.distance_from(b0) > 1e-6 * a0.grid.altitude
+  a_last, b_last = segs[-1]
+  assert a_last.distance_from(b_last) > 1e-6 * a_last.grid.altitude
+
+
+def test_shortest_path_by_segment_handles_antipodal_centroids(icosahedron):
+  # Icosahedron-specific regression test (not parametrized over
+  # `generic_mesh`, since "antipodal centroids" relies on this mesh's exact
+  # symmetry): exactly-antipodal face centroids put many equal-length
+  # corridors in an exact A* tie. This must resolve to some single,
+  # consistent, valid path rather than raising or looping.
+  tess, _, faces = icosahedron
+  p1 = faces[0].centroid_local_coords
+  p2 = faces[13].centroid_local_coords
+  segs = tess.shortest_path_by_segment(p1, p2)
+  assert segs[0][0] is p1
+  assert segs[-1][1] is p2
+  for a, b in segs:
+    assert a.grid is b.grid

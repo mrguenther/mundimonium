@@ -4,6 +4,7 @@ import random
 import numpy as np
 import pytest
 
+from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
 
 
@@ -207,3 +208,79 @@ def test_geodesically_canonicalize_point_is_idempotent_when_in_bounds(
   assert point.grid is grid_before
   assert point.b == pytest.approx(b_before)
   assert point.s == pytest.approx(s_before)
+
+
+# ---------------------------------------------------------------------------
+# shortest_path_by_segment
+# ---------------------------------------------------------------------------
+
+def test_shortest_path_by_segment_same_face_is_a_single_segment(fine_sphere):
+  face = fine_sphere._faces[0]
+  alt = face.altitude
+  p1 = IsometricPoint(face, 0.1 * alt, 0.1 * alt)
+  p2 = IsometricPoint(face, 0.3 * alt, 0.2 * alt)
+  assert fine_sphere.shortest_path_by_segment(p1, p2) == [(p1, p2)]
+
+
+def test_shortest_path_by_segment_identical_point_is_a_single_segment(
+    fine_sphere):
+  p1 = fine_sphere.new_point_at_coords(1.0, 1.0)
+  p2 = fine_sphere.new_point_at_coords(1.0, 1.0)
+  segs = fine_sphere.shortest_path_by_segment(p1, p2)
+  assert len(segs) == 1
+
+
+def test_shortest_path_by_segment_far_apart_endpoints_match_request(
+    fine_sphere):
+  p1 = fine_sphere.new_point_at_coords(0.5, 0.5)
+  p2 = fine_sphere.new_point_at_coords(2.0, 4.0)
+  segs = fine_sphere.shortest_path_by_segment(p1, p2)
+  assert len(segs) > 1
+  assert segs[0][0].grid is p1.grid
+  assert segs[0][0].b == p1.b and segs[0][0].s == p1.s
+  assert segs[-1][1].grid is p2.grid
+  assert segs[-1][1].b == p2.b and segs[-1][1].s == p2.s
+
+
+def test_shortest_path_by_segment_each_segment_stays_within_one_grid(
+    fine_sphere):
+  p1 = fine_sphere.new_point_at_coords(0.5, 0.5)
+  p2 = fine_sphere.new_point_at_coords(2.0, 4.0)
+  segs = fine_sphere.shortest_path_by_segment(p1, p2)
+  for a, b in segs:
+    assert a.grid is b.grid
+
+
+def test_shortest_path_by_segment_boundary_crossings_are_physically_continuous(
+    fine_sphere):
+  p1 = fine_sphere.new_point_at_coords(0.5, 0.5)
+  p2 = fine_sphere.new_point_at_coords(2.0, 4.0)
+  segs = fine_sphere.shortest_path_by_segment(p1, p2)
+  for (_, exit_point), (entry_point, _) in zip(segs, segs[1:]):
+    v_exit = fine_sphere._point_to_3d_unit(exit_point)
+    v_entry = fine_sphere._point_to_3d_unit(entry_point)
+    assert v_exit == pytest.approx(v_entry, abs=1e-6)
+
+
+def test_shortest_path_by_segment_has_no_minuscule_segments(fine_sphere):
+  p1 = fine_sphere.new_point_at_coords(0.5, 0.5)
+  p2 = fine_sphere.new_point_at_coords(2.0, 4.0)
+  segs = fine_sphere.shortest_path_by_segment(p1, p2)
+  for a, b in segs:
+    assert a.distance_from(b) > 1e-6 * a.grid.altitude
+
+
+def test_shortest_path_by_segment_handles_exact_antipodal_points():
+  # Regression test: exactly-antipodal points make the great-circle SLERP
+  # formula a 0/0 indeterminate form (every great circle through one point
+  # also passes through its antipode), which must be resolved via the
+  # deterministic reference-direction fallback rather than raising or
+  # producing NaNs.
+  sphere = SphericalTessellation(radius=1.0, frequency=3)
+  p1 = sphere.new_point_at_coords(0.4, 0.0)
+  p2 = sphere.new_point_at_coords(math.pi - 0.4, math.pi)
+  segs = sphere.shortest_path_by_segment(p1, p2)
+  assert segs[0][0].grid is p1.grid
+  assert segs[-1][1].grid is p2.grid
+  for a, b in segs:
+    assert a.grid is b.grid

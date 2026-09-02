@@ -123,7 +123,7 @@ def test_distance_uses_local_distance_on_shared_grid():
   p1 = IsometricPoint(grid, 0.1, 0.1)
   p2 = IsometricPoint(grid, 0.4, 0.1)
   b_comp, s_comp = p2.b - p1.b, p2.s - p1.s
-  expected = isometric_distance(b_comp - 0.5 * s_comp, s_comp - 0.5 * b_comp)
+  expected = (2.0 / math.sqrt(3.0)) * isometric_distance(b_comp, -s_comp)
   assert grid.distance(p1, p2) == pytest.approx(
       grid.local_distance(p1, p2))
   assert grid.distance(p1, p2) == pytest.approx(expected)
@@ -438,8 +438,7 @@ def test_unit_vector_has_length_one():
 
 def test_length_matches_isometric_distance_between_delta_b_and_delta_s():
   v = IsometricVector(3.0, 0.0)
-  expected = isometric_distance(
-      v.delta_b - 0.5 * v.delta_s, v.delta_s - 0.5 * v.delta_b)
+  expected = (2.0 / math.sqrt(3.0)) * isometric_distance(v.delta_b, -v.delta_s)
   assert v.length == pytest.approx(expected)
 
 

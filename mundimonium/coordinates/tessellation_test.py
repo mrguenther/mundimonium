@@ -45,6 +45,9 @@ def test_subclass_may_not_shadow_base_init_kwargs():
       def shortest_path(self, p1, p2):
         raise NotImplementedError()
 
+      def shortest_path_by_segment(self, p1, p2):
+        raise NotImplementedError()
+
       def geodesically_canonicalize_point(self, point):
         raise NotImplementedError()
 
