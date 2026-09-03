@@ -116,6 +116,18 @@ def test_add_face_from_linear_distortion_factor():
   assert face.side_length == pytest.approx(3.0)
 
 
+def test_vertices_and_faces_are_read_only_views_over_the_private_lists(
+    icosahedron):
+  tess, _, _ = icosahedron
+  assert list(tess.vertices) == tess._vertices
+  assert list(tess.faces) == tess._faces
+  assert tess.vertices[0] is tess._vertices[0]
+  assert tess.num_vertices == len(tess._vertices)
+  assert tess.num_faces == len(tess._faces)
+  with pytest.raises(TypeError):
+    tess.vertices[0] = TessellationVertex([0, 0, 0])
+
+
 def test_registering_the_same_face_twice_is_a_noop(icosahedron):
   tess, verts, faces = icosahedron
   before = len(tess._faces)

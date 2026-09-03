@@ -8,6 +8,7 @@ from mundimonium.coordinates.isometric import (
     IsometricDirection, IsometricGrid, IsometricPoint, IsometricVector,
     isometric_distance
 )
+from mundimonium.utils.sequence_view import SequenceView
 
 import abc
 import functools
@@ -90,6 +91,36 @@ class Tessellation(abc.ABC):
   def face_type(self) -> type[TessellationFace]:
     """The `TessellationFace` subclass used for this tessellation's faces."""
     return self._face_type
+
+  @property
+  def vertices(self) -> SequenceView[TessellationVertex]:
+    """A read-only view of every vertex registered so far.
+
+    Returns:
+      A view over the underlying vertex list -- indexable and iterable,
+      but neither a copy nor mutable.
+    """
+    return SequenceView(self._vertices)
+
+  @property
+  def faces(self) -> SequenceView[TessellationFace]:
+    """A read-only view of every face registered so far.
+
+    Returns:
+      A view over the underlying face list -- indexable and iterable, but
+      neither a copy nor mutable.
+    """
+    return SequenceView(self._faces)
+
+  @property
+  def num_vertices(self) -> int:
+    """The number of vertices registered so far."""
+    return len(self._vertices)
+
+  @property
+  def num_faces(self) -> int:
+    """The number of faces registered so far."""
+    return len(self._faces)
 
   @abc.abstractmethod
   def coords_at_point(self, point: IsometricPoint) -> tuple[Number, ...]:
