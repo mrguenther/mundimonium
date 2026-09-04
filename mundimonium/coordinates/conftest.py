@@ -46,7 +46,7 @@ def icosahedron():
   return build_icosahedron()
 
 
-def build_stellated_icosahedron():
+def build_stellated_icosahedron(face_type=None):
   """A `GenericTessellation` shaped like a stellated icosahedron.
 
   Each of the 20 icosahedron faces is replaced by a regular tetrahedron
@@ -68,7 +68,7 @@ def build_stellated_icosahedron():
   original face (in `_BASE_FACES` order), each triple ordered
   `(apex, va, vb), (apex, vb, vc), (apex, vc, va)`.
   """
-  tess = GenericTessellation()
+  tess = GenericTessellation(face_type=face_type)
   base_verts = [TessellationVertex(list(v)) for v in _BASE_RAW]
 
   a0, b0 = _BASE_FACES[0][0], _BASE_FACES[0][1]
