@@ -10,6 +10,29 @@ contextBridge.exposeInMainWorld('mundimonium', {
   getMesh: (request) => ipcRenderer.invoke('mesh:get', request),
 
   /**
+   * @param {{ tessellation: string, radius?: number, frequency?: number,
+   *   cameraPosition: [number, number, number], autoSubdivide?: boolean }}
+   *   request
+   * @returns {Promise<{ positions: Float32Array, indices: Uint32Array,
+   *   sectors: object[] }>} `sectors[i]` is the address of the sector
+   *   `indices`' `i`-th triangle came from, for a later `subdivideSector`
+   *   call.
+   */
+  getLodMesh: (request) => ipcRenderer.invoke('mesh:getLod', request),
+
+  /**
+   * Grows one sector's LOD detail. Doesn't return geometry itself -- call
+   * `getLodMesh` again afterward to pick up the newly available detail.
+   *
+   * @param {{ tessellation: string, radius?: number, frequency?: number,
+   *   sector: object }} request - `sector` is an address from a prior
+   *   `getLodMesh` response's `sectors` array.
+   * @returns {Promise<void>}
+   */
+  subdivideSector: (request) =>
+      ipcRenderer.invoke('mesh:subdivideSector', request),
+
+  /**
    * @param {(status: { state: 'starting'|'ready'|'crashed'|'exited', detail?: string }) => void} callback
    * @returns {() => void} Unsubscribe function.
    */

@@ -328,6 +328,22 @@ class SphericalTessellation(Tessellation):
 
     self._base_face_normals = np.array(base_face_normals, dtype=np.float64)
 
+  def point_to_3d_position(self, point: IsometricPoint) -> np.ndarray:
+    """Returns the 3D world-space position of `point` on the sphere's surface.
+
+    Args:
+      point: A point whose grid is (or projects onto, via
+        `project_onto_root_grid`) one of this tessellation's own faces.
+
+    Returns:
+      A `(x, y, z)` position `self.radius` from `self.center`, in the
+      direction of `point`.
+    """
+    return (
+        np.array(self._center, dtype=np.float64)
+        + self._radius * self._point_to_3d_unit(point)
+    )
+
   def _point_to_3d_unit(self, pt: IsometricPoint) -> np.ndarray:
     """Returns a unit vector pointing from the sphere's center toward `point`.
     """

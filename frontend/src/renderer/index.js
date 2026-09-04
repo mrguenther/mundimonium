@@ -1,11 +1,27 @@
 import { SceneManager } from './scene/SceneManager.js';
 import { OrbitCameraController } from './scene/CameraController.js';
-import { buildShadedMesh } from './scene/MeshLoader.js';
+import { buildGeometry, buildShadedMesh } from './scene/MeshLoader.js';
 
 const statusElement = document.getElementById('status');
 
+const TESSELLATION = { tessellation: 'spherical', radius: 1, frequency: 3 };
+
+// Debug-only stand-in for a real click-to-subdivide UI (not built this
+// phase -- growing LOD detail defaults to off, since it's expected to
+// eventually trigger procedural generation). Press 'g' to subdivide the
+// first sector from the most recently rendered frontier.
+const DEBUG_SUBDIVIDE_KEY = 'g';
+
 function setStatus(text) {
   statusElement.textContent = text;
+}
+
+/**
+ * @param {THREE.Camera} camera
+ * @returns {[number, number, number]}
+ */
+function cameraPositionArray(camera) {
+  return [camera.position.x, camera.position.y, camera.position.z];
 }
 
 async function main() {
@@ -21,20 +37,52 @@ async function main() {
     }
   });
 
+  let mesh;
+  let lastSectors = [];
+
+  async function refreshLodMesh() {
+    const meshData = await window.mundimonium.getLodMesh({
+      ...TESSELLATION,
+      cameraPosition: cameraPositionArray(cameraController.camera),
+    });
+    lastSectors = meshData.sectors;
+    if (mesh) {
+      mesh.geometry.dispose();
+      mesh.geometry = buildGeometry(meshData);
+    }
+    return meshData;
+  }
+
   setStatus('Requesting mesh...');
   try {
-    const meshData = await window.mundimonium.getMesh({
-      tessellation: 'spherical', radius: 1, frequency: 3,
-    });
-    const { mesh, lights } = buildShadedMesh(meshData);
+    const meshData = await refreshLodMesh();
+    const built = buildShadedMesh(meshData);
+    mesh = built.mesh;
     sceneManager.addToScene(mesh);
-    for (const light of lights) {
+    for (const light of built.lights) {
       sceneManager.addToScene(light);
     }
     setStatus('');
   } catch (error) {
     setStatus(`Failed to load mesh: ${error.message}`);
+    return;
   }
+
+  cameraController.onChange(() => {
+    refreshLodMesh().catch((error) => {
+      setStatus(`Failed to update mesh: ${error.message}`);
+    });
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== DEBUG_SUBDIVIDE_KEY || lastSectors.length === 0) {
+      return;
+    }
+    window.mundimonium
+        .subdivideSector({ ...TESSELLATION, sector: lastSectors[0] })
+        .then(refreshLodMesh)
+        .catch((error) => setStatus(`Failed to subdivide: ${error.message}`));
+  });
 }
 
 main();

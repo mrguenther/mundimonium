@@ -59,6 +59,36 @@ function registerIpcHandlers(pythonBridge, getWindows) {
     return { positions, indices };
   });
 
+  ipcMain.handle('mesh:getLod', async (_event, request) => {
+    const { header, body } = await pythonBridge.request({
+      type: 'get_lod_mesh',
+      tessellation: request.tessellation,
+      radius: request.radius,
+      frequency: request.frequency,
+      camera_position: request.cameraPosition,
+      auto_subdivide: request.autoSubdivide,
+    });
+
+    // Same [positions bytes][indices bytes] body layout as `get_mesh`'s
+    // `mesh` response (see mesh_export.py); `lod_mesh` additionally
+    // carries each triangle's sector address in the header, not the body.
+    const positions = new Float32Array(copyToAlignedArrayBuffer(
+        body, 0, header.positions_byte_length));
+    const indices = new Uint32Array(copyToAlignedArrayBuffer(
+        body, header.positions_byte_length, header.indices_byte_length));
+    return { positions, indices, sectors: header.sectors };
+  });
+
+  ipcMain.handle('mesh:subdivideSector', async (_event, request) => {
+    await pythonBridge.request({
+      type: 'subdivide_sector',
+      tessellation: request.tessellation,
+      radius: request.radius,
+      frequency: request.frequency,
+      sector: request.sector,
+    });
+  });
+
   pythonBridge.on('python:status', (status) => {
     for (const window of getWindows()) {
       if (!window.isDestroyed()) {
