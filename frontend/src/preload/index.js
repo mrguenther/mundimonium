@@ -33,12 +33,36 @@ contextBridge.exposeInMainWorld('mundimonium', {
       ipcRenderer.invoke('mesh:subdivideSector', request),
 
   /**
+   * Like `getLodMesh`, but positions are flattened (a locally flat 2D
+   * projection, `z` always `0`) around the mesh point the camera is
+   * currently over, rather than in true 3D.
+   *
+   * @param {{ tessellation: string, radius?: number, frequency?: number,
+   *   cameraPosition: [number, number, number], autoSubdivide?: boolean }}
+   *   request
+   * @returns {Promise<{ positions: Float32Array, indices: Uint32Array,
+   *   sectors: object[] }>}
+   */
+  getFlatMesh: (request) => ipcRenderer.invoke('mesh:getFlat', request),
+
+  /**
    * @param {{ tessellation: string, radius?: number, frequency?: number,
    *   cameraPosition: [number, number, number] }} request
    * @returns {Promise<{ items: { kind: string, label?: string, x: number,
    *   y: number, z: number }[] }>}
    */
   getItems: (request) => ipcRenderer.invoke('items:get', request),
+
+  /**
+   * Like `getItems`, but `x`/`y` are flattened the same way
+   * `getFlatMesh`'s positions are, and `z` is always `0`.
+   *
+   * @param {{ tessellation: string, radius?: number, frequency?: number,
+   *   cameraPosition: [number, number, number] }} request
+   * @returns {Promise<{ items: { kind: string, label?: string, x: number,
+   *   y: number, z: number }[] }>}
+   */
+  getFlatItems: (request) => ipcRenderer.invoke('items:getFlat', request),
 
   /**
    * @param {(status: { state: 'starting'|'ready'|'crashed'|'exited', detail?: string }) => void} callback

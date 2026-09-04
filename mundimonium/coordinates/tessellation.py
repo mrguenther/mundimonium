@@ -165,9 +165,12 @@ class Tessellation(abc.ABC):
     """Maps `targets` into a locally flat 2D coordinate system at `center`.
 
     This is the Riemannian log map at `center`: each returned `(x, y)`
-    satisfies `hypot(x, y) == self.distance(center, target)` exactly, with
-    the angle encoding `target`'s direction from `center`. Output is in
-    this tessellation's own true geodesic-distance units.
+    satisfies `hypot(x, y) == self.geodesic_distance(center, target)`
+    exactly, with the angle encoding `target`'s direction from `center`.
+    Output is in this tessellation's own true geodesic-distance units.
+    (Deliberately compared to `geodesic_distance`, not `distance` --
+    `distance` takes a faster, approximate flat-local-frame shortcut for
+    points on the same or adjacent grid, which this doesn't match exactly.)
 
     Subclasses that don't support this should raise `NotImplementedError`.
 

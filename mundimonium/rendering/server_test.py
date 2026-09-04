@@ -1,5 +1,7 @@
 import io
 
+import numpy as np
+
 from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshFace
 from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
@@ -176,3 +178,42 @@ def test_get_items_reveals_the_scale_gated_item_once_close():
   response_header, _ = dispatch(header, b'')
   labels = {item['label'] for item in response_header['items']}
   assert 'Hiddenreach' in labels
+
+
+# ---------------------------------------------------------------------------
+# get_flat_mesh / get_flat_items
+# ---------------------------------------------------------------------------
+
+def test_get_flat_mesh_returns_a_valid_response_with_zero_z():
+  header = {
+      'type': 'get_flat_mesh', 'id': '11', 'tessellation': 'spherical',
+      'radius': 60.0, 'frequency': 1, 'camera_position': [0.0, 0.0, 6000.0],
+  }
+  response_header, response_body = dispatch(header, b'')
+  assert response_header['type'] == 'flat_mesh'
+  assert response_header['id'] == '11'
+  assert response_header['face_count'] == len(response_header['sectors'])
+  assert len(response_body) == (
+      response_header['positions_byte_length']
+      + response_header['indices_byte_length'])
+
+  positions = np.frombuffer(
+      response_body[:response_header['positions_byte_length']],
+      dtype=np.float32).reshape(-1, 3)
+  assert np.all(positions[:, 2] == 0.0)
+
+
+def test_get_flat_items_returns_seeded_demo_items_with_zero_z():
+  header = {
+      'type': 'get_flat_items', 'id': '12', 'tessellation': 'spherical',
+      'radius': 70.0, 'frequency': 1, 'camera_position': [0.0, 0.0, 7000.0],
+  }
+  response_header, response_body = dispatch(header, b'')
+  assert response_header['type'] == 'items'
+  assert response_header['id'] == '12'
+  assert response_body == b''
+
+  labels = {item['label'] for item in response_header['items']}
+  assert {'Anchorhold', 'Millbrook', 'Stonegate'} <= labels
+  for item in response_header['items']:
+    assert item['z'] == 0.0

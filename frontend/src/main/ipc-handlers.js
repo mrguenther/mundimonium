@@ -89,9 +89,37 @@ function registerIpcHandlers(pythonBridge, getWindows) {
     });
   });
 
+  ipcMain.handle('mesh:getFlat', async (_event, request) => {
+    const { header, body } = await pythonBridge.request({
+      type: 'get_flat_mesh',
+      tessellation: request.tessellation,
+      radius: request.radius,
+      frequency: request.frequency,
+      camera_position: request.cameraPosition,
+      auto_subdivide: request.autoSubdivide,
+    });
+
+    const positions = new Float32Array(copyToAlignedArrayBuffer(
+        body, 0, header.positions_byte_length));
+    const indices = new Uint32Array(copyToAlignedArrayBuffer(
+        body, header.positions_byte_length, header.indices_byte_length));
+    return { positions, indices, sectors: header.sectors };
+  });
+
   ipcMain.handle('items:get', async (_event, request) => {
     const { header } = await pythonBridge.request({
       type: 'get_items',
+      tessellation: request.tessellation,
+      radius: request.radius,
+      frequency: request.frequency,
+      camera_position: request.cameraPosition,
+    });
+    return { items: header.items };
+  });
+
+  ipcMain.handle('items:getFlat', async (_event, request) => {
+    const { header } = await pythonBridge.request({
+      type: 'get_flat_items',
       tessellation: request.tessellation,
       radius: request.radius,
       frequency: request.frequency,

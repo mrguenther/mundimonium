@@ -1,13 +1,33 @@
 import * as THREE from 'three';
 
 import { SceneManager } from './scene/SceneManager.js';
-import { OrbitCameraController } from './scene/CameraController.js';
+import {
+  FlatMapCameraController, OrbitCameraController,
+} from './scene/CameraController.js';
 import { buildGeometry, buildShadedMesh } from './scene/MeshLoader.js';
 import { buildItemSprites } from './scene/ItemLoader.js';
 
 const statusElement = document.getElementById('status');
 
 const TESSELLATION = { tessellation: 'spherical', radius: 1, frequency: 3 };
+
+// Mirrors `SphericalTessellation.__init__`'s own `ideal_face_side_length`
+// formula (mundimonium/coordinates/spherical_tessellation.py) -- computed
+// client-side to avoid a round-trip just for a constant that only depends
+// on `TESSELLATION`'s fixed radius/frequency.
+const SIDE_LENGTH = (() => {
+  const idealSurfaceArea = 4.0 * Math.PI * TESSELLATION.radius ** 2;
+  const faceCount = 20 * TESSELLATION.frequency ** 2;
+  const idealFaceArea = idealSurfaceArea / faceCount;
+  return Math.sqrt(idealFaceArea * 4 / Math.sqrt(3));
+})();
+
+// Camera altitude above the surface, in units of SIDE_LENGTH, at which the
+// view hard-cuts between the 3D orbit mode and the flat 2D map mode. Same
+// threshold both directions (no hysteresis) -- a placeholder value,
+// expected to need empirical tuning once there's a real scene to test it
+// against.
+const FLAT_MODE_THRESHOLD = 5.0;
 
 // Debug-only stand-in for a real click-to-subdivide UI (not built this
 // phase -- growing LOD detail defaults to off, since it's expected to
@@ -27,11 +47,20 @@ function cameraPositionArray(camera) {
   return [camera.position.x, camera.position.y, camera.position.z];
 }
 
+/**
+ * @param {[number, number, number]} cameraPosition
+ * @returns {number}
+ */
+function altitudeAboveSurface(cameraPosition) {
+  const [x, y, z] = cameraPosition;
+  return Math.hypot(x, y, z) - TESSELLATION.radius;
+}
+
 async function main() {
   const sceneManager = new SceneManager(document.body);
-  const cameraController = new OrbitCameraController(
+  const orbitController = new OrbitCameraController(
       sceneManager.renderer.domElement);
-  sceneManager.setActiveController(cameraController);
+  sceneManager.setActiveController(orbitController);
   sceneManager.start();
 
   window.mundimonium.onPythonStatus((status) => {
@@ -44,23 +73,35 @@ async function main() {
   let lastSectors = [];
   const itemGroup = new THREE.Group();
 
+  // Non-null exactly while the flat map is the active mode. Its camera is
+  // rebuilt fresh each time flat mode is entered; `flatModeCameraPosition`
+  // is the 3D camera position flat mode was entered with, reused so a
+  // debug-triggered subdivide can refresh the same flattened view (see the
+  // plan: panning/zooming *within* flat mode doesn't itself re-fetch).
+  let flatController = null;
+  let flatModeCameraPosition = null;
+
+  // `switchToFlatMode` awaits a round-trip before `orbitController` is
+  // disabled, so a second drag/zoom in that gap could otherwise trigger a
+  // re-entrant call (constructing a second `FlatMapCameraController` no
+  // one tracks or disposes).
+  let switchingModes = false;
+
   async function refreshLodMesh() {
     const meshData = await window.mundimonium.getLodMesh({
       ...TESSELLATION,
-      cameraPosition: cameraPositionArray(cameraController.camera),
+      cameraPosition: cameraPositionArray(orbitController.camera),
     });
     lastSectors = meshData.sectors;
-    if (mesh) {
-      mesh.geometry.dispose();
-      mesh.geometry = buildGeometry(meshData);
-    }
+    mesh.geometry.dispose();
+    mesh.geometry = buildGeometry(meshData);
     return meshData;
   }
 
   async function refreshItems() {
     const { items } = await window.mundimonium.getItems({
       ...TESSELLATION,
-      cameraPosition: cameraPositionArray(cameraController.camera),
+      cameraPosition: cameraPositionArray(orbitController.camera),
     });
     itemGroup.clear();
     for (const sprite of buildItemSprites(items)) {
@@ -68,9 +109,75 @@ async function main() {
     }
   }
 
+  async function refreshFlatMesh() {
+    const meshData = await window.mundimonium.getFlatMesh({
+      ...TESSELLATION, cameraPosition: flatModeCameraPosition,
+    });
+    lastSectors = meshData.sectors;
+    mesh.geometry.dispose();
+    mesh.geometry = buildGeometry(meshData);
+    return meshData;
+  }
+
+  async function refreshFlatItems() {
+    const { items } = await window.mundimonium.getFlatItems({
+      ...TESSELLATION, cameraPosition: flatModeCameraPosition,
+    });
+    itemGroup.clear();
+    for (const sprite of buildItemSprites(items)) {
+      itemGroup.add(sprite);
+    }
+  }
+
+  async function switchToFlatMode() {
+    if (switchingModes) {
+      return;
+    }
+    switchingModes = true;
+    try {
+      flatModeCameraPosition = cameraPositionArray(orbitController.camera);
+      const halfHeight = Math.max(
+          altitudeAboveSurface(flatModeCameraPosition), 0.01);
+
+      orbitController.setEnabled(false);
+      flatController = new FlatMapCameraController(
+          sceneManager.renderer.domElement, { halfHeight });
+      await Promise.all([refreshFlatMesh(), refreshFlatItems()]);
+      sceneManager.setActiveController(flatController);
+
+      flatController.onChange(() => {
+        const visibleHalfHeight =
+            flatController.camera.top / flatController.camera.zoom;
+        if (visibleHalfHeight > FLAT_MODE_THRESHOLD * SIDE_LENGTH) {
+          switchToOrbitMode();
+        }
+      });
+    } finally {
+      switchingModes = false;
+    }
+  }
+
+  function switchToOrbitMode() {
+    flatController.dispose();
+    flatController = null;
+    flatModeCameraPosition = null;
+    orbitController.setEnabled(true);
+    sceneManager.setActiveController(orbitController);
+    refreshLodMesh().catch((error) => {
+      setStatus(`Failed to update mesh: ${error.message}`);
+    });
+    refreshItems().catch((error) => {
+      setStatus(`Failed to update items: ${error.message}`);
+    });
+  }
+
   setStatus('Requesting mesh...');
   try {
-    const meshData = await refreshLodMesh();
+    const meshData = await window.mundimonium.getLodMesh({
+      ...TESSELLATION,
+      cameraPosition: cameraPositionArray(orbitController.camera),
+    });
+    lastSectors = meshData.sectors;
     const built = buildShadedMesh(meshData);
     mesh = built.mesh;
     sceneManager.addToScene(mesh);
@@ -85,7 +192,17 @@ async function main() {
     return;
   }
 
-  cameraController.onChange(() => {
+  orbitController.onChange(() => {
+    if (switchingModes) {
+      return;
+    }
+    const cameraPosition = cameraPositionArray(orbitController.camera);
+    if (altitudeAboveSurface(cameraPosition) < FLAT_MODE_THRESHOLD * SIDE_LENGTH) {
+      switchToFlatMode().catch((error) => {
+        setStatus(`Failed to switch to flat mode: ${error.message}`);
+      });
+      return;
+    }
     refreshLodMesh().catch((error) => {
       setStatus(`Failed to update mesh: ${error.message}`);
     });
@@ -98,9 +215,10 @@ async function main() {
     if (event.key !== DEBUG_SUBDIVIDE_KEY || lastSectors.length === 0) {
       return;
     }
+    const refresh = flatController ? refreshFlatMesh : refreshLodMesh;
     window.mundimonium
         .subdivideSector({ ...TESSELLATION, sector: lastSectors[0] })
-        .then(refreshLodMesh)
+        .then(refresh)
         .catch((error) => setStatus(`Failed to subdivide: ${error.message}`));
   });
 }

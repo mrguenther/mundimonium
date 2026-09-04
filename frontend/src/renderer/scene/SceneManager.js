@@ -4,12 +4,10 @@ import * as THREE from 'three';
  * Owns the Three.js scene, renderer, and render loop.
  *
  * Renders whatever camera is currently "active" via `setActiveController`
- * -- it doesn't know or care whether that's an orbit-controlled
- * perspective camera (this phase) or, later, a flat-map orthographic one.
- * That's the seam a future camera-distance-based mode switch hooks into:
- * something outside this class watches distance-to-target each frame and
- * calls `setActiveController` with a different controller: no change
- * needed here.
+ * -- it doesn't know or care whether that's `OrbitCameraController`'s
+ * perspective camera or `FlatMapCameraController`'s orthographic one.
+ * `index.js` watches camera distance and calls `setActiveController` to
+ * hard-cut between the two.
  */
 export class SceneManager {
   /** @param {HTMLElement} container - Element the canvas is appended to. */
@@ -56,8 +54,19 @@ export class SceneManager {
   _onResize() {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     const camera = this._activeController && this._activeController.camera;
-    if (camera && camera.isPerspectiveCamera) {
-      camera.aspect = window.innerWidth / window.innerHeight;
+    if (!camera) {
+      return;
+    }
+    const aspect = window.innerWidth / window.innerHeight;
+    if (camera.isPerspectiveCamera) {
+      camera.aspect = aspect;
+      camera.updateProjectionMatrix();
+    } else if (camera.isOrthographicCamera) {
+      // Vertical extent (`top`) stays fixed on resize; only the
+      // horizontal extent adjusts to the new aspect ratio.
+      const halfHeight = camera.top;
+      camera.left = -halfHeight * aspect;
+      camera.right = halfHeight * aspect;
       camera.updateProjectionMatrix();
     }
   }
