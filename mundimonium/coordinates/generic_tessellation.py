@@ -31,49 +31,33 @@ import scipy.sparse.linalg as spla
 # rotation as before it.
 _DEGENERATE_RAY_NUDGE_RADIANS = 1e-7
 
-# How finely `RelaxableFace` samples each face for `GenericTessellation.
-# flatten_region`'s relaxation algorithm -- each face contributes
-# `(resolution + 1) * (resolution + 2) / 2` points. A starting, empirically-
+# The radius (in real mesh-edge units) each face's own local-flattening
+# precompute (`RelaxableFace.flatten_local_face_transform`) extends to --
+# both how far the position-based-dynamics relaxation reaches and which
+# faces end up as keys in the resulting dict. A starting, empirically-
 # tunable placeholder (see the plan).
-_LATTICE_RESOLUTION = 3
-
-# The radius (in this tessellation's own geodesic-distance units) `flatten_
-# region` relaxes out to from its anchor point. Also a starting placeholder.
 RELAXATION_RADIUS = 3.0
 
-# Position-based-dynamics relaxation passes per `flatten_region` call: more
-# when starting from a fresh hinge-unfolded guess (a new/distant anchor),
-# fewer when warm-started from a previous call's already-relaxed positions
-# (the same or an adjacent anchor -- see the plan). Empirically chosen: at
-# `_SOR_FACTOR` below, 30 cold-start passes bring per-pass point movement
-# (the convergence signal that actually matters -- see `_SOR_FACTOR`'s own
-# comment) down to roughly 0.5% of the average edge length on a regular
-# mesh and roughly 2-3% on an irregular-valence one (the latter never
-# reaches exactly zero -- flattening a non-valence-6 vertex is inherently
-# lossy, so some residual settling is expected, not a bug); 4 warm-start
-# passes bring even a deliberately large (10% of edge length) perturbation
-# back under 1% within 4-5 passes, and real anchor-to-anchor jumps between
-# adjacent lattice points move far less than that. Still starting
-# placeholders in the sense that nothing has tuned them against an actual
-# rendered frame budget yet -- see the plan.
-_COLD_START_PASSES = 30
-_WARM_START_PASSES = 4
+# Position-based-dynamics relaxation passes for each face's one-time
+# precompute of `flatten_local_face_transform`. Generous relative to a
+# per-frame budget, since this runs once per face (cached until nearby
+# topology changes) rather than once per query -- affording a thorough
+# solve costs nothing at render time. A starting placeholder.
+_PRECOMPUTE_PASSES = 60
 
 # Successive-*under*-relaxation factor applied to each PBD correction in
 # `_relaxation_pass`. `1.0` is the "textbook" undamped Gauss-Seidel PBD
 # update, but empirically (a fixed-anchor benchmark sweeping this factor
 # against per-pass point movement over many passes, on both a regular and
-# an irregular-valence mesh -- not part of the test suite, since it's a
-# one-time tuning question, not an ongoing correctness one) `1.0` doesn't
-# actually converge here: this constraint graph has enough interlocking
-# short cycles (six edges meeting at most lattice points) that a full,
-# undamped correction overshoots and settles into a small stable
-# oscillation instead of decaying to zero. *Under*-relaxing damps that
-# overshoot: values from about `0.5` to `0.65` converge cleanly and
-# fastest (geometric decay, not a plateau); below that range convergence
-# slows down again, and above roughly `0.7` the same oscillation reappears
-# on the irregular mesh. `0.6` was the best-converging value in that
-# stable band on both meshes tested.
+# an irregular-valence mesh) `1.0` doesn't actually converge on this kind
+# of constraint graph: enough interlocking short cycles (six edges meeting
+# at most vertices) that a full, undamped correction overshoots and
+# settles into a small stable oscillation instead of decaying to zero.
+# *Under*-relaxing damps that overshoot: values from about `0.5` to `0.65`
+# converge cleanly and fastest (geometric decay, not a plateau); below
+# that range convergence slows down again, and above roughly `0.7` the
+# same oscillation reappears on the irregular mesh. `0.6` was the best-
+# converging value in that stable band on both meshes tested.
 _SOR_FACTOR = 0.6
 
 
@@ -86,193 +70,435 @@ def _canonical_local_frame(face: TessellationFace) -> np.ndarray:
   distorted faces too.
 
   Module-level (not a method) since both `GenericTessellation` (corridor/
-  ray unfolding) and `RelaxableFace` (lattice rest-length geometry) need
-  it, with no other dependency on either class.
+  ray unfolding) and `RelaxableFace` (flattening precompute geometry)
+  need it, with no other dependency on either class.
   """
   a = float(face.side_length)
   h = float(face.altitude)
   return np.array([[0.0, 0.0], [a, 0.0], [0.5 * a, h]], dtype=np.float64)
 
 
-def _lattice_ijk(resolution: int) -> list[tuple[int, int, int]]:
-  """Every barycentric-index triple `(i, j, k)` with `i + j + k ==
-  resolution`, `i, j, k >= 0` -- `RelaxableFace`'s sample pattern, the
-  same relative shape on every face regardless of size.
+def _hinge_unfold_faces(
+    faces: Sequence[TessellationFace],
+) -> dict[TessellationFace, np.ndarray]:
+  """Hinge-unfolds every face in `faces` into `faces[0]`'s own
+  (untransformed) canonical frame, via face adjacency -- the same
+  rotation transform `shortest_path_by_segment`/`geodesically_
+  canonicalize_point` use to unfold one shared edge at a time,
+  generalized from a single corridor to a whole BFS tree. Every face in
+  `faces` reachable from `faces[0]` via `face_on_edge` without leaving
+  the set gets an entry; any that aren't (e.g. only connected via a
+  saddle vertex, not a shared edge) are simply absent from the result --
+  callers needing those too must seed them some other way (see
+  `_seed_fallback_positions`).
   """
-  return [
-      (i, j, resolution - i - j)
-      for i in range(resolution + 1)
-      for j in range(resolution + 1 - i)
-  ]
+  relevant = set(faces)
+  root = faces[0]
+  unfolded: dict[TessellationFace, np.ndarray] = {
+      root: _canonical_local_frame(root),
+  }
+  queue = collections.deque([root])
+  while queue:
+    face = queue.popleft()
+    face_frame = unfolded[face]
+    for direction in IsometricDirection:
+      neighbor = face.face_on_edge(direction)
+      if (neighbor is None or neighbor not in relevant
+          or neighbor in unfolded):
+        continue
+
+      vertex_a = face.vertex_at(
+          IsometricDirection((direction.value + 1) % 3))
+      vertex_b = face.vertex_at(
+          IsometricDirection((direction.value + 2) % 3))
+      pos_a = face_frame[(direction.value + 1) % 3]
+      pos_b = face_frame[(direction.value + 2) % 3]
+
+      neighbor_local = _canonical_local_frame(neighbor)
+      local_a = neighbor_local[neighbor.direction_toward_vertex(vertex_a).value]
+      local_b = neighbor_local[neighbor.direction_toward_vertex(vertex_b).value]
+
+      # Rotation mapping `neighbor`'s own local edge vector onto its
+      # already-unfolded counterpart -- "unfolding" `neighbor` flat,
+      # hinged along the shared edge.
+      u = local_b - local_a
+      v = pos_b - pos_a
+      inv_len_sq = 1.0 / (u[0] ** 2 + u[1] ** 2)
+      cos_t = (u[0] * v[0] + u[1] * v[1]) * inv_len_sq
+      sin_t = (u[0] * v[1] - u[1] * v[0]) * inv_len_sq
+      rotation = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
+
+      unfolded[neighbor] = np.array([
+          pos_a + rotation @ (neighbor_local[k] - local_a)
+          for k in range(3)
+      ])
+      queue.append(neighbor)
+  return unfolded
 
 
-def _lattice_adjacency(resolution: int) -> list[list[int]]:
-  """For each index into `_lattice_ijk(resolution)`, the indices of its
-  immediate lattice neighbors (one step along either barycentric axis,
-  within the same face) -- up to 6, fewer on the pattern's own boundary.
+def _relaxation_pass(
+    positions: dict[object, np.ndarray],
+    edges: Sequence[tuple[object, object, float]],
+    mobility: dict[object, float],
+) -> None:
+  """One position-based-dynamics sweep: for each edge, nudges both
+  endpoints toward satisfying its rest length, weighted by mobility
+  (`0` pinned, `1` fully free) and damped by `_SOR_FACTOR` -- see that
+  constant's own comment for why the damping is needed.
   """
-  triples = _lattice_ijk(resolution)
-  index_of = {triple: index for index, triple in enumerate(triples)}
-  steps = ((-1, 1, 0), (1, -1, 0), (-1, 0, 1), (1, 0, -1), (0, -1, 1), (0, 1, -1))
-  adjacency = []
-  for i, j, k in triples:
-    neighbors = []
-    for di, dj, dk in steps:
-      candidate = (i + di, j + dj, k + dk)
-      if candidate in index_of:
-        neighbors.append(index_of[candidate])
-    adjacency.append(neighbors)
-  return adjacency
+  for key_a, key_b, rest_length in edges:
+    pos_a = positions[key_a]
+    pos_b = positions[key_b]
+    delta = pos_a - pos_b
+    current_length = float(np.linalg.norm(delta))
+    if current_length < 1e-12:
+      continue
+    weight_a = mobility[key_a]
+    weight_b = mobility[key_b]
+    total_weight = weight_a + weight_b
+    if total_weight < 1e-12:
+      continue
+    direction = delta / current_length
+    correction = _SOR_FACTOR * (current_length - rest_length)
+    positions[key_a] = (
+        pos_a - direction * (weight_a / total_weight) * correction)
+    positions[key_b] = (
+        pos_b + direction * (weight_b / total_weight) * correction)
 
 
-_LATTICE_TRIPLES = _lattice_ijk(_LATTICE_RESOLUTION)
-_LATTICE_ADJACENCY = _lattice_adjacency(_LATTICE_RESOLUTION)
-
-
-def _edge_key(
-    vertex_a: TessellationVertex, vertex_b: TessellationVertex,
-    numerator_from_a: int,
-) -> tuple:
-  """A canonical, face-independent identity for the relaxation point
-  `numerator_from_a / _LATTICE_RESOLUTION` of the way from `vertex_a` to
-  `vertex_b` along their shared edge.
-
-  Canonicalized (by an arbitrary but stable `id()` tie-break) so the two
-  faces on either side of a shared edge -- which generally label
-  `vertex_a`/`vertex_b` differently -- agree on the same key for the same
-  physical point.
+def _recentered_local_frame(face: TessellationFace) -> np.ndarray:
+  """`_canonical_local_frame(face)`, shifted so `face`'s own centroid
+  sits at `(0, 0)` -- the universal "local coordinate" convention every
+  `flatten_local_face_transform` is defined relative to (see the plan):
+  it's already a fixed, reproducible layout for any face, so centering it
+  on the centroid satisfies both stated conventions (centroid-centered, a
+  consistent reference orientation) with no extra rotation logic needed.
   """
-  if id(vertex_a) > id(vertex_b):
-    vertex_a, vertex_b = vertex_b, vertex_a
-    numerator_from_a = _LATTICE_RESOLUTION - numerator_from_a
-  return ('edge', vertex_a, vertex_b, numerator_from_a)
+  frame = _canonical_local_frame(face)
+  return frame - frame.mean(axis=0)
 
 
-def _interior_key(face: TessellationFace, i: int, j: int) -> tuple:
-  """A relaxation point strictly inside `face` -- never shared with any
-  other face, unlike a corner (`TessellationVertex` identity) or edge
-  point (`_edge_key`).
-  """
-  return ('interior', face, i, j)
+def _local_xy(point: IsometricPoint) -> np.ndarray:
+  """`point`'s position within its own face's `_recentered_local_frame`."""
+  wb, ws, wd = point.barycentric
+  frame = _recentered_local_frame(point.grid)
+  return wb * frame[0] + ws * frame[1] + wd * frame[2]
 
 
 @dataclass(frozen=True)
-class _RelaxationNeighborhood:
-  """Everything within `RELAXATION_RADIUS` of one anchor relaxation point
-  -- computed once (by `GenericTessellation._relaxation_neighborhood`) and
-  cached per anchor key, since it depends only on mesh topology/geometry,
-  never on which `flatten_region` call asked for it.
+class _AffineTransform2D:
+  """A 2D affine map `p -> linear @ p + translation` -- how one face's
+  own `_recentered_local_frame` should be rotated, scaled, skewed, and
+  translated to sit correctly in another (possibly the same) face's
+  flattened output frame. See `RelaxableFace.flatten_local_face_transform`.
   """
 
-  # Every key in range, mapped to its distance from the anchor and one
-  # concrete `(face, local_index)` location for it (arbitrary, if the key
-  # has more than one -- e.g. a shared vertex -- since they're all
-  # geometrically coincident).
-  locations: dict[object, tuple[float, TessellationFace, int]]
+  linear: np.ndarray       # (2, 2)
+  translation: np.ndarray  # (2,)
 
-  # Every face touched by `locations`, in discovery order (deterministic,
-  # for reproducible relaxation -- see `edges`).
-  faces: tuple[TessellationFace, ...]
-
-  # Every lattice edge with both endpoints in `locations`, as `(key_a,
-  # key_b, rest_length)`. Not deduplicated -- an edge between two shared
-  # (multi-face) keys can appear more than once, from different faces'
-  # own copies of it, which is harmless for the position-based-dynamics
-  # relaxation that consumes this (each pass just applies the same
-  # correction more than once) but not worth the bookkeeping to avoid.
-  edges: tuple[tuple[object, object, float], ...]
+  def apply(self, local_xy: np.ndarray) -> np.ndarray:
+    """Maps a `_recentered_local_frame` 2D position through this transform."""
+    return self.linear @ local_xy + self.translation
 
 
-class RelaxableFace(TessellationFace):
-  """A `TessellationFace` that additionally exposes a fixed lattice of
-  interpolated sample points, used by `GenericTessellation.flatten_
-  region`'s relaxation algorithm (see the plan).
+def _affine_from_correspondences(
+    local_corners: np.ndarray, target_corners: np.ndarray,
+) -> _AffineTransform2D:
+  """The unique 2D affine map taking each of `local_corners` (3, 2) to
+  the corresponding row of `target_corners` (3, 2).
 
-  Used via `GenericTessellation(..., face_type=RelaxableFace)`,
-  mirroring how `LodMeshFace` opts a `SphericalTessellation` into
-  LOD-tree awareness.
+  3 point correspondences exactly determine a 2D affine map's 6 degrees
+  of freedom (a 2x2 linear part plus a 2-vector translation): eliminate
+  translation via corner 0 (subtracting it from every corner turns this
+  into a plain 2x2 linear solve for the other two correspondences), then
+  recover the translation from corner 0's own mapping. Always solvable
+  for `local_corners` taken from an equilateral triangle's own frame --
+  never degenerate/collinear.
+  """
+  local_0, local_1, local_2 = local_corners
+  target_0, target_1, target_2 = target_corners
+  locals_delta = np.column_stack([local_1 - local_0, local_2 - local_0])
+  targets_delta = np.column_stack([target_1 - target_0, target_2 - target_0])
+  linear = targets_delta @ np.linalg.inv(locals_delta)
+  translation = target_0 - linear @ local_0
+  return _AffineTransform2D(linear=linear, translation=translation)
+
+
+def _blend_transforms(
+    weighted_transforms: Sequence[tuple[float, _AffineTransform2D]],
+) -> _AffineTransform2D:
+  """The weighted average of several `_AffineTransform2D`s -- a plain
+  per-component weighted sum, well-defined since affine maps live in an
+  ordinary vector space. Not necessarily a pure rotation once blended (a
+  small, bounded skew/scale artifact is possible) -- an accepted
+  tradeoff, see the plan. Requires a non-empty `weighted_transforms` with
+  a strictly positive total weight.
+  """
+  total_weight = sum(weight for weight, _ in weighted_transforms)
+  linear = sum(
+      weight * transform.linear for weight, transform in weighted_transforms
+  ) / total_weight
+  translation = sum(
+      weight * transform.translation
+      for weight, transform in weighted_transforms
+  ) / total_weight
+  return _AffineTransform2D(linear=linear, translation=translation)
+
+
+def _discover_nearby(
+    start_vertices: Sequence[TessellationVertex], radius: float,
+) -> tuple[
+    dict[TessellationVertex, float], set[TessellationFace],
+    list[tuple[TessellationVertex, TessellationVertex, float]],
+]:
+  """Dijkstra over the vertex graph -- edges are every registered face's
+  3 corner-pairs, each at that face's own `side_length` (every edge of an
+  equilateral triangle equals its own `side_length`, so no separate
+  per-edge geometry is needed) -- starting every vertex in
+  `start_vertices` at distance 0, capped at `radius`. Naturally crosses a
+  "saddle" vertex (shared by two faces that don't share an edge) the same
+  way it crosses any other, with no special case, since it never reasons
+  about face-to-face adjacency at all.
+
+  Returns:
+    `(distances, nearby_faces, edges)`: `distances` maps every reached
+    vertex to its shortest distance from `start_vertices`; `nearby_faces`
+    is every face all 3 of whose vertices were reached (a face with only
+    1 or 2 corners in range is left out entirely -- no partial/
+    extrapolated inclusion); `edges` is every `(vertex_a, vertex_b,
+    rest_length)` pair between two reached vertices, one entry per face
+    contributing that edge -- not deduplicated across faces sharing an
+    edge, which is harmless for the position-based-dynamics relaxation
+    this feeds (each pass just applies the same correction more than
+    once).
+  """
+  distances: dict[TessellationVertex, float] = {v: 0.0 for v in start_vertices}
+  counter = itertools.count()
+  frontier = [(0.0, next(counter), v) for v in start_vertices]
+  heapq.heapify(frontier)
+
+  while frontier:
+    dist, _, vertex = heapq.heappop(frontier)
+    if dist > distances[vertex]:
+      continue
+    for face in vertex.adjacent_faces():
+      rest_length = float(face.side_length)
+      for other in (face.vertex_b, face.vertex_s, face.vertex_d):
+        if other is vertex:
+          continue
+        new_dist = dist + rest_length
+        if new_dist > radius:
+          continue
+        if other not in distances or distances[other] > new_dist:
+          distances[other] = new_dist
+          heapq.heappush(frontier, (new_dist, next(counter), other))
+
+  nearby_faces: set[TessellationFace] = set()
+  edges: list[tuple[TessellationVertex, TessellationVertex, float]] = []
+  faces_checked: set[TessellationFace] = set()
+  for vertex in distances:
+    for face in vertex.adjacent_faces():
+      if face in faces_checked:
+        continue
+      faces_checked.add(face)
+      corners = (face.vertex_b, face.vertex_s, face.vertex_d)
+      if all(corner in distances for corner in corners):
+        nearby_faces.add(face)
+      rest_length = float(face.side_length)
+      for corner_a, corner_b in (
+          (corners[0], corners[1]), (corners[1], corners[2]),
+          (corners[2], corners[0])):
+        if corner_a in distances and corner_b in distances:
+          edges.append((corner_a, corner_b, rest_length))
+
+  return distances, nearby_faces, edges
+
+
+def _seed_fallback_positions(
+    nearby_vertices: set[TessellationVertex],
+    edges: Sequence[tuple[TessellationVertex, TessellationVertex, float]],
+    positions: dict[TessellationVertex, np.ndarray],
+) -> None:
+  """Fills in `positions` for any of `nearby_vertices` hinge-unfolding
+  didn't reach -- only possible via a saddle-vertex-only path, since
+  hinge-unfolding walks face edge-adjacency (rare, but `_discover_nearby`
+  can find faces `_hinge_unfold_faces` can't reach that way).
+
+  Seeds each one at an already-seeded neighbor's own position, offset by
+  that edge's rest length along a direction that varies by vertex
+  identity (so two fallback-seeded neighbors of the same parent don't
+  land exactly on top of each other, which would stall
+  `_relaxation_pass`'s zero-length-edge guard). Only a starting guess for
+  the iterative relaxation that follows -- an imprecise rotation here is
+  corrected by relaxation, not by this seed.
+  """
+  adjacency: dict[
+      TessellationVertex, list[tuple[TessellationVertex, float]]] = (
+      collections.defaultdict(list))
+  for vertex_a, vertex_b, rest_length in edges:
+    adjacency[vertex_a].append((vertex_b, rest_length))
+    adjacency[vertex_b].append((vertex_a, rest_length))
+
+  queue = collections.deque(v for v in nearby_vertices if v in positions)
+  while queue:
+    vertex = queue.popleft()
+    for neighbor, rest_length in adjacency[vertex]:
+      if neighbor in positions:
+        continue
+      angle = (hash(neighbor) % 360) * math.pi / 180.0
+      offset = rest_length * np.array([math.cos(angle), math.sin(angle)])
+      positions[neighbor] = positions[vertex] + offset
+      queue.append(neighbor)
+
+
+class FlattenTransformMixin:
+  """Shared lazy-caching shape for `RelaxableFace`/`RelaxableVertex`'s own
+  `flatten_local_face_transform` -- each concrete class supplies its own
+  `_compute_flatten_transforms`; this handles the caching/invalidation
+  plumbing identically for both, so it isn't duplicated.
   """
 
-  def __init__(
-      self,
-      *,
-      vertex_b: TessellationVertex,
-      vertex_s: TessellationVertex,
-      vertex_d: TessellationVertex,
-      **kwargs):
-    super().__init__(
-        vertex_b=vertex_b, vertex_s=vertex_s, vertex_d=vertex_d, **kwargs)
-    self._relaxation_points: tuple[IsometricPoint, ...] | None = None
-    self._relaxation_dedup_keys: tuple[object, ...] | None = None
-    self._relaxation_key_by_point: dict[IsometricPoint, object] | None = None
+  _flatten_transforms: dict[TessellationFace, _AffineTransform2D] | None = None
 
   @property
-  def relaxation_points(self) -> tuple[IsometricPoint, ...]:
-    """A fixed lattice of `_LATTICE_RESOLUTION`-based interpolated points
-    on this face -- the same relative pattern as every other
-    `RelaxableFace`, in the same order as `dedup_keys()`. Computed once,
-    lazily, and cached.
+  def flatten_local_face_transform(
+      self) -> dict[TessellationFace, _AffineTransform2D]:
+    """Every nearby face's precomputed flattening transform relative to
+    this face/vertex -- see `GenericTessellation.flatten_region` and the
+    plan's design. Computed once, lazily, and cached until
+    `invalidate_flatten_transform` is called (on nearby topology change).
     """
-    if self._relaxation_points is None:
-      self._build_relaxation_lattice()
-    return self._relaxation_points
+    if self._flatten_transforms is None:
+      self._flatten_transforms = self._compute_flatten_transforms()
+    return self._flatten_transforms
 
-  def dedup_keys(self) -> tuple[object, ...]:
-    """`relaxation_points[i]`'s cross-face identity, for the same index
-    `i` -- a `TessellationVertex` (corner), an `_edge_key(...)` tuple
-    (edge point), or an `_interior_key(...)` tuple (interior point).
-    Computed once, lazily, and cached.
+  def invalidate_flatten_transform(self) -> None:
+    """Clears the cached `flatten_local_face_transform`, if any."""
+    self._flatten_transforms = None
+
+  def _compute_flatten_transforms(
+      self) -> dict[TessellationFace, _AffineTransform2D]:
+    """Computes `flatten_local_face_transform`'s value. Implemented by
+    each concrete subclass (`RelaxableFace`/`RelaxableVertex`).
     """
-    if self._relaxation_dedup_keys is None:
-      self._build_relaxation_lattice()
-    return self._relaxation_dedup_keys
+    raise NotImplementedError()
 
-  def dedup_key_for_point(self, point: IsometricPoint) -> object | None:
-    """The `dedup_keys()` entry for `point`, if `point` happens to
-    coincide exactly with one of this face's own `relaxation_points`
-    (e.g. it was constructed the same way, such as a face corner) --
-    `None` otherwise. Used by `GenericTessellation._resolve_target` to
-    read a lattice-point target's already-relaxed position directly,
-    rather than only ever approximating it via barycentric interpolation
-    of the face's 3 corners.
+
+class RelaxableFace(TessellationFace, FlattenTransformMixin):
+  """A `TessellationFace` that additionally exposes a precomputed
+  `flatten_local_face_transform`, mapping every nearby face to the affine
+  transform that flattens it relative to this face -- see
+  `GenericTessellation.flatten_region` and the plan's design.
+
+  Used via `GenericTessellation(..., face_type=RelaxableFace, vertex_
+  type=RelaxableVertex)` -- both are required together, since a vertex's
+  own `flatten_local_face_transform` is itself derived from its adjacent
+  faces' (this) values.
+  """
+
+  def _compute_flatten_transforms(
+      self) -> dict[TessellationFace, _AffineTransform2D]:
+    """Relaxes a local neighborhood of real mesh vertices -- pinned
+    exactly at this face's own 3 corners, with progressively more
+    freedom out to `RELAXATION_RADIUS` -- via position-based dynamics,
+    then reads each nearby face's own affine transform off its 3 relaxed
+    corners.
     """
-    if self._relaxation_key_by_point is None:
-      self._build_relaxation_lattice()
-    return self._relaxation_key_by_point.get(point)
+    self_frame = _canonical_local_frame(self)
+    self_centroid = self_frame.mean(axis=0)
+    own_corners = {
+        self.vertex_b: self_frame[0] - self_centroid,
+        self.vertex_s: self_frame[1] - self_centroid,
+        self.vertex_d: self_frame[2] - self_centroid,
+    }
 
-  def _build_relaxation_lattice(self) -> None:
-    """Computes and caches `relaxation_points`/`dedup_keys` together."""
-    n = _LATTICE_RESOLUTION
-    altitude = self.altitude
-    points = []
-    keys = []
-    for i, j, k in _LATTICE_TRIPLES:
-      points.append(
-          IsometricPoint(self, (i / n) * altitude, (j / n) * altitude))
-      keys.append(self._relaxation_dedup_key(i, j, k))
-    self._relaxation_points = tuple(points)
-    self._relaxation_dedup_keys = tuple(keys)
-    self._relaxation_key_by_point = dict(zip(points, keys))
+    distances, nearby_faces, edges = _discover_nearby(
+        self._adjacent_vertices, RELAXATION_RADIUS)
+    nearby_vertices = set(distances.keys())
 
-  def _relaxation_dedup_key(self, i: int, j: int, k: int) -> object:
-    """The cross-face identity of this face's own lattice point `(i, j,
-    k)` -- see `_edge_key`/`_interior_key`'s docstrings for the
-    classification and canonicalization this relies on.
+    unfolded_frames = _hinge_unfold_faces(
+        [self] + [face for face in nearby_faces if face is not self])
+    positions: dict[TessellationVertex, np.ndarray] = dict(own_corners)
+    for face, frame in unfolded_frames.items():
+      if face is self:
+        continue
+      recentered = frame - self_centroid
+      for corner, vertex in zip(
+          recentered, (face.vertex_b, face.vertex_s, face.vertex_d)):
+        positions.setdefault(vertex, corner)
+    _seed_fallback_positions(nearby_vertices, edges, positions)
+
+    mobility = {
+        vertex: min(1.0, distances[vertex] / RELAXATION_RADIUS)
+        for vertex in nearby_vertices
+    }
+    for vertex in own_corners:
+      mobility[vertex] = 0.0
+
+    for _ in range(_PRECOMPUTE_PASSES):
+      _relaxation_pass(positions, edges, mobility)
+
+    transforms: dict[TessellationFace, _AffineTransform2D] = {}
+    for face in nearby_faces:
+      local_corners = _recentered_local_frame(face)
+      target_corners = np.array([
+          positions[face.vertex_b], positions[face.vertex_s],
+          positions[face.vertex_d],
+      ])
+      transforms[face] = _affine_from_correspondences(
+          local_corners, target_corners)
+    return transforms
+
+
+class RelaxableVertex(TessellationVertex, FlattenTransformMixin):
+  """A `TessellationVertex` that additionally exposes a precomputed
+  `flatten_local_face_transform`, blended from its adjacent faces' own
+  values -- see `RelaxableFace` and `GenericTessellation.flatten_region`.
+  Required alongside `RelaxableFace` (`GenericTessellation(vertex_type=
+  RelaxableVertex, face_type=RelaxableFace)`).
+  """
+
+  def _compute_flatten_transforms(
+      self) -> dict[TessellationFace, _AffineTransform2D]:
+    """The weighted average of every adjacent face's own
+    `flatten_local_face_transform`, weighted by `1 / that face's own
+    circumradius` (`side_length / sqrt(3)`, the fixed centroid-to-any-
+    own-vertex distance for an equilateral triangle) -- a plain equal-
+    weighted average on a uniform-side-length mesh, while still sensibly
+    down-weighting a larger face's contribution on a non-uniform one.
+    Weights are renormalized per nearby face over just the adjacent
+    faces whose own dict actually has that nearby face as a key.
+
+    Each adjacent face's own contribution is re-centered first, by
+    subtracting that face's own (exactly known) position of *this*
+    vertex from its translation, before blending -- without this, the
+    blended result would be centered on some arbitrary mix of several
+    different (possibly distant) faces' own centroids, not on this
+    vertex at all. A face's own transform for itself is always the
+    identity (see `RelaxableFace`), so that one term's own recentered
+    contribution places this vertex's own position at exactly `(0, 0)`;
+    the others only approximately agree with it (the same small, bounded
+    inter-face disagreement already discussed elsewhere), so the overall
+    blended result lands only *close to* `(0, 0)` for this vertex's own
+    position, not exactly on it.
     """
-    n = _LATTICE_RESOLUTION
-    if i == n:
-      return self.vertex_b
-    if j == n:
-      return self.vertex_s
-    if k == n:
-      return self.vertex_d
-    if i == 0:
-      return _edge_key(self.vertex_s, self.vertex_d, k)
-    if j == 0:
-      return _edge_key(self.vertex_d, self.vertex_b, i)
-    if k == 0:
-      return _edge_key(self.vertex_b, self.vertex_s, j)
-    return _interior_key(self, i, j)
+    contributions: dict[
+        TessellationFace, list[tuple[float, _AffineTransform2D]]] = (
+        collections.defaultdict(list))
+    for face in self.adjacent_faces():
+      weight = math.sqrt(3.0) / float(face.side_length)
+      self_offset = _recentered_local_frame(face)[
+          face.direction_toward_vertex(self).value]
+      for nearby_face, transform in face.flatten_local_face_transform.items():
+        recentered = _AffineTransform2D(
+            linear=transform.linear,
+            translation=transform.translation - self_offset)
+        contributions[nearby_face].append((weight, recentered))
+
+    return {
+        nearby_face: _blend_transforms(weighted)
+        for nearby_face, weighted in contributions.items()
+    }
 
 
 class GenericTessellation(Tessellation):
@@ -314,17 +540,6 @@ class GenericTessellation(Tessellation):
     self._heat_solver = None
     self._poisson_solver = None
 
-    # `flatten_region`'s caches (see the plan). `_relaxation_neighborhoods`
-    # maps an anchor point's dedup key to its precomputed neighborhood:
-    # every other key within RELAXATION_RADIUS, each mapped to `(distance,
-    # face, local_index)` -- computed once per anchor, lazily, and reused
-    # by every later call that snaps to the same anchor.
-    # `_flatten_position_cache` holds the last solve's relaxed positions,
-    # keyed by dedup key, for warm-starting the next call (see `_relax`).
-    self._relaxation_neighborhoods: dict[
-        object, dict[object, tuple[float, TessellationFace, int]]] = {}
-    self._flatten_position_cache: dict[object, np.ndarray] = {}
-
   @override
   def new_point_at_coords(
       self, *coords: tuple[Number, ...]) -> IsometricPoint | None:
@@ -346,22 +561,39 @@ class GenericTessellation(Tessellation):
   def flatten_region(
       self, center: IsometricPoint, targets: Sequence[IsometricPoint],
   ) -> list[tuple[float, float]]:
-    """Maps `targets` into a locally flat 2D coordinate system, relaxed
-    outward from `center`'s nearest `RelaxableFace` sample point.
+    """Maps `targets` into a locally flat 2D coordinate system, built
+    from `center`'s own face's precomputed `flatten_local_face_transform`
+    -- and, unless `center` sits exactly at that face's centroid, a
+    blend with 1-2 of that face's own vertices' precomputed transforms
+    too, chosen and weighted by which of the face's 3 centroid-
+    subdivided sub-triangles `center` falls in. See the plan for the
+    full design and why it's structured this way.
 
-    Unlike `SphericalTessellation`/`HyperbolicTessellation` (Phase 4),
-    `GenericTessellation` has no closed-form embedding to compute an
-    exact log map from, so this instead relaxes a fixed lattice of
-    sample points (`RelaxableFace.relaxation_points`) via position-based
-    dynamics -- pinned exactly at an anchor point snapped to `center`,
-    with progressively more freedom out to `RELAXATION_RADIUS`. See the
-    plan for the full algorithm and why it's structured this way.
+    No relaxation runs here at all: every nearby face's transform
+    relative to any given anchor (a face's own centroid, or one of its
+    vertices) is precomputed once and cached on that anchor itself (see
+    `RelaxableFace`/`RelaxableVertex`) -- this method only locates
+    `center`'s anchors and interpolates between their precomputed
+    results.
 
-    Requires `self.face_type` to be (a subclass of) `RelaxableFace`.
+    Requires `self.face_type`/`self.vertex_type` to be (subclasses of)
+    `RelaxableFace`/`RelaxableVertex`.
+
+    Note: unlike the base class's own docstring guarantee, `center`
+    itself is not guaranteed to map to exactly `(0, 0)` here. It does
+    when it coincides exactly with `face`'s own centroid (that anchor's
+    transform for its own face is always the identity, by construction).
+    At a vertex, it lands only *close to* `(0, 0)` even when `center`
+    coincides with that vertex exactly -- a vertex's own precomputed
+    transform is itself a blend across its several adjacent faces' own
+    (independently relaxed) opinions, which only approximately agree
+    with each other (see `RelaxableVertex`). Anywhere else, `center`
+    lands close to the origin within roughly one face's own size. All of
+    this is an accepted consequence of interpolating between a fixed set
+    of precomputed anchors rather than relaxing fresh each call.
 
     Args:
-      center: The point the flattened region is centered on. Snapped to
-        whichever of its own face's `relaxation_points` is closest.
+      center: The point the flattened region is centered on.
       targets: The points to flatten, in any order.
 
     Returns:
@@ -369,358 +601,94 @@ class GenericTessellation(Tessellation):
 
     Raises:
       TypeError: If `self.face_type` isn't a `RelaxableFace` subclass.
-      ValueError: If a target's face lies outside `RELAXATION_RADIUS` of
-        `center`.
+      ValueError: If a target's face lies outside every one of
+        `center`'s blended anchors' precomputed ranges.
     """
-    if not isinstance(center.grid, RelaxableFace):
+    face = center.grid
+    if not isinstance(face, RelaxableFace):
       raise TypeError(
           "GenericTessellation.flatten_region: requires self.face_type to "
           "be a RelaxableFace subclass, got "
-          f"{type(center.grid).__name__}.")
+          f"{type(face).__name__}.")
 
     if not targets:
       return []
 
-    anchor_face = center.grid
-    anchor_index = self._closest_relaxation_point(anchor_face, center)
-    anchor_key = anchor_face.dedup_keys()[anchor_index]
-
-    neighborhood = self._relaxation_neighborhood(
-        anchor_key, anchor_face, anchor_index)
-    positions = self._relax(anchor_key, neighborhood)
-
-    return [self._resolve_target(target, positions) for target in targets]
+    blended = self._blended_transforms_at(face, center)
+    return [self._resolve_target(target, blended) for target in targets]
 
   @staticmethod
-  def _closest_relaxation_point(
-      face: TessellationFace, point: IsometricPoint) -> int:
-    """The index into `face.relaxation_points` closest to `point` (also
-    on `face`), by true local distance.
-    """
-    points = face.relaxation_points
-    return min(
-        range(len(points)), key=lambda index: point.distance_from(points[index]))
+  def _blended_transforms_at(
+      face: RelaxableFace, point: IsometricPoint,
+  ) -> dict[TessellationFace, _AffineTransform2D]:
+    """The interpolated `flatten_local_face_transform` at `point` (on
+    `face`) -- a blend of `face`'s own centroid-anchored transform and
+    (unless `point` sits exactly at the centroid) 1-2 of `face`'s own
+    vertices' transforms, per whichever of the 3 centroid-subdivided
+    sub-triangles (centroid + 2 of the face's 3 corners) `point` falls
+    in. Only keys present in `face`'s own dict are included -- a key
+    present in a vertex's dict but not `face`'s own is dropped, since
+    `face` doesn't consider that far face nearby regardless of what a
+    neighboring vertex picked up.
 
-  def _relaxation_neighborhood(
-      self, anchor_key: object, anchor_face: TessellationFace,
-      anchor_index: int,
-  ) -> _RelaxationNeighborhood:
-    """Returns (computing and caching if needed) everything within
-    `RELAXATION_RADIUS` of `anchor_key` -- a single-source Dijkstra over
-    the lattice-point graph, capped at `RELAXATION_RADIUS`. See
-    `_RelaxationNeighborhood`.
+    Degenerate positions (exactly at the centroid, at a vertex, or on
+    any of the 3 dividing edges) all fall out of this same computation
+    as a 1- or 2-anchor blend -- no special-casing needed.
     """
-    cached = self._relaxation_neighborhoods.get(anchor_key)
-    if cached is not None:
-      return cached
+    wb, ws, wd = point.barycentric
+    weight_by_vertex = {face.vertex_b: wb, face.vertex_s: ws, face.vertex_d: wd}
+    excluded_vertex = min(weight_by_vertex, key=weight_by_vertex.get)
+    corner_1, corner_2 = (
+        vertex for vertex in (face.vertex_b, face.vertex_s, face.vertex_d)
+        if vertex is not excluded_vertex
+    )
 
-    locations: dict[object, tuple[float, TessellationFace, int]] = {
-        anchor_key: (0.0, anchor_face, anchor_index),
+    local_frame = _recentered_local_frame(face)
+    corner_xy = {
+        face.vertex_b: local_frame[0],
+        face.vertex_s: local_frame[1],
+        face.vertex_d: local_frame[2],
     }
-    faces: list[TessellationFace] = [anchor_face]
-    faces_seen: set[TessellationFace] = {anchor_face}
-    counter = itertools.count()
-    frontier = [(0.0, next(counter), anchor_key, anchor_face, anchor_index)]
+    sub_frame = np.array([np.zeros(2), corner_xy[corner_1], corner_xy[corner_2]])
+    weight_centroid, weight_1, weight_2 = (
+        GenericTessellation._local_2d_to_barycentric_in_frame(
+            _local_xy(point), sub_frame))
 
-    while frontier:
-      dist, _, key, arrival_face, arrival_index = heapq.heappop(frontier)
-      if dist > locations[key][0]:
-        continue
-      for occurrence_face, occurrence_index in self._relaxation_occurrences(
-          key, arrival_face, arrival_index):
-        if occurrence_face not in faces_seen:
-          faces_seen.add(occurrence_face)
-          faces.append(occurrence_face)
-        for neighbor_key, neighbor_index, rest_length in (
-            self._relaxation_local_edges(occurrence_face, occurrence_index)):
-          new_dist = dist + rest_length
-          if new_dist > RELAXATION_RADIUS:
-            continue
-          existing = locations.get(neighbor_key)
-          if existing is not None and existing[0] <= new_dist:
-            continue
-          locations[neighbor_key] = (
-              new_dist, occurrence_face, neighbor_index)
-          heapq.heappush(
-              frontier,
-              (new_dist, next(counter), neighbor_key, occurrence_face,
-               neighbor_index))
+    anchors = [
+        (weight_centroid, face.flatten_local_face_transform),
+        (weight_1, corner_1.flatten_local_face_transform),
+        (weight_2, corner_2.flatten_local_face_transform),
+    ]
 
-    edges = self._relaxation_edges(faces, locations)
-    neighborhood = _RelaxationNeighborhood(
-        locations=locations, faces=tuple(faces), edges=edges)
-    self._relaxation_neighborhoods[anchor_key] = neighborhood
-    return neighborhood
-
-  @staticmethod
-  def _relaxation_occurrences(
-      key: object, arrival_face: TessellationFace, arrival_index: int,
-  ) -> list[tuple[TessellationFace, int]]:
-    """Every `(face, local_index)` where `key` appears as a relaxation
-    point -- every face whose own lattice must be locally expanded to
-    find all of `key`'s neighbors (a shared vertex can touch many faces;
-    a shared edge point, at most two; an interior point, only its own).
-    """
-    if isinstance(key, TessellationVertex):
-      return [
-          (face, face.dedup_keys().index(key))
-          for face in key.adjacent_faces()
+    blended: dict[TessellationFace, _AffineTransform2D] = {}
+    for nearby_face in face.flatten_local_face_transform:
+      weighted = [
+          (weight, transform_dict[nearby_face])
+          for weight, transform_dict in anchors
+          if weight > 1e-12 and nearby_face in transform_dict
       ]
-
-    if isinstance(key, tuple) and key[0] == 'edge':
-      i, j, _k = _LATTICE_TRIPLES[arrival_index]
-      if i == 0:
-        direction = IsometricDirection.B
-      elif j == 0:
-        direction = IsometricDirection.S
-      else:
-        direction = IsometricDirection.D
-      occurrences = [(arrival_face, arrival_index)]
-      other_face = arrival_face.face_on_edge(direction)
-      if other_face is not None:
-        occurrences.append((other_face, other_face.dedup_keys().index(key)))
-      return occurrences
-
-    return [(arrival_face, arrival_index)]  # interior point
-
-  @staticmethod
-  def _relaxation_local_edges(
-      face: TessellationFace, local_index: int,
-  ) -> list[tuple[object, int, float]]:
-    """Every immediate lattice-neighbor of `face`'s own point at
-    `local_index`, as `(neighbor_key, neighbor_local_index, rest_length)`
-    -- rest length from the flat 2D distance in `face`'s own canonical
-    frame, exact since that frame *is* the flat truth within `face`.
-    """
-    keys = face.dedup_keys()
-    frame = _canonical_local_frame(face)
-    n = _LATTICE_RESOLUTION
-    i0, j0, k0 = _LATTICE_TRIPLES[local_index]
-    pos0 = (i0 / n) * frame[0] + (j0 / n) * frame[1] + (k0 / n) * frame[2]
-    results = []
-    for neighbor_index in _LATTICE_ADJACENCY[local_index]:
-      i1, j1, k1 = _LATTICE_TRIPLES[neighbor_index]
-      pos1 = (i1 / n) * frame[0] + (j1 / n) * frame[1] + (k1 / n) * frame[2]
-      rest_length = float(np.linalg.norm(pos1 - pos0))
-      results.append((keys[neighbor_index], neighbor_index, rest_length))
-    return results
-
-  @staticmethod
-  def _relaxation_edges(
-      faces: Sequence[TessellationFace],
-      locations: dict[object, tuple[float, TessellationFace, int]],
-  ) -> tuple[tuple[object, object, float], ...]:
-    """Every lattice edge, from every face in `faces`, whose both
-    endpoints are in `locations` -- see `_RelaxationNeighborhood.edges`.
-    """
-    edges = []
-    for face in faces:
-      for index_a, key_a in enumerate(face.dedup_keys()):
-        if key_a not in locations:
-          continue
-        for key_b, _index_b, rest_length in (
-            GenericTessellation._relaxation_local_edges(face, index_a)):
-          if key_b in locations:
-            edges.append((key_a, key_b, rest_length))
-    return tuple(edges)
-
-  def _relax(
-      self, anchor_key: object, neighborhood: _RelaxationNeighborhood,
-  ) -> dict[object, np.ndarray]:
-    """Solves for every neighborhood point's 2D position, warm-starting
-    from the previous call's positions whenever `anchor_key` was itself
-    among them -- true not just when the anchor is exactly unchanged, but
-    also when it's moved to a nearby lattice point still within the old
-    neighborhood (the common case as a camera pans continuously: most of
-    the neighborhood persists between one snapped anchor and the next).
-    """
-    old_positions = self._flatten_position_cache
-    # The new anchor's own position under the *old* frame -- re-centering
-    # every reused position against this (rather than reusing them as-is)
-    # is what makes them valid seeds in the new frame, where `anchor_key`
-    # itself must land at exactly `(0, 0)`. `None` when the new anchor
-    # wasn't part of the previous call's neighborhood at all (a distant
-    # jump, or the very first call) -- nothing to meaningfully reuse.
-    old_anchor_position = old_positions.get(anchor_key)
-
-    positions: dict[object, np.ndarray] = {}
-    if old_anchor_position is not None:
-      for key in neighborhood.locations:
-        cached = old_positions.get(key)
-        if cached is not None:
-          positions[key] = cached - old_anchor_position
-
-    missing = [key for key in neighborhood.locations if key not in positions]
-    if missing:
-      self._seed_initial_positions(anchor_key, neighborhood, positions, missing)
-    positions[anchor_key] = np.zeros(2, dtype=np.float64)
-
-    mobility = {
-        key: min(1.0, distance / RELAXATION_RADIUS)
-        for key, (distance, _face, _index) in neighborhood.locations.items()
-    }
-    mobility[anchor_key] = 0.0
-
-    warm = old_anchor_position is not None
-    passes = _WARM_START_PASSES if warm else _COLD_START_PASSES
-    for _ in range(passes):
-      self._relaxation_pass(positions, neighborhood.edges, mobility)
-
-    self._flatten_position_cache = positions
-    return positions
-
-  @staticmethod
-  def _seed_initial_positions(
-      anchor_key: object,
-      neighborhood: _RelaxationNeighborhood,
-      positions: dict[object, np.ndarray],
-      missing: Sequence[object],
-  ) -> None:
-    """Fills in `positions[key]` for every `key` in `missing`, via
-    hinge-unfolding -- an initial guess for `_relax`'s relaxation passes
-    to refine, re-centered so `anchor_key` lands at exactly `(0, 0)`.
-    """
-    frames = GenericTessellation._hinge_unfold_faces(neighborhood.faces)
-    n = _LATTICE_RESOLUTION
-
-    def unfolded_position(face: TessellationFace, index: int) -> np.ndarray:
-      i, j, k = _LATTICE_TRIPLES[index]
-      frame = frames[face]
-      return (i / n) * frame[0] + (j / n) * frame[1] + (k / n) * frame[2]
-
-    _, anchor_face, anchor_index = neighborhood.locations[anchor_key]
-    anchor_origin = unfolded_position(anchor_face, anchor_index)
-
-    for key in missing:
-      _, face, index = neighborhood.locations[key]
-      positions[key] = unfolded_position(face, index) - anchor_origin
-
-  @staticmethod
-  def _hinge_unfold_faces(
-      faces: Sequence[TessellationFace],
-  ) -> dict[TessellationFace, np.ndarray]:
-    """Hinge-unfolds every face in `faces` into `faces[0]`'s own
-    (untransformed) canonical frame, via face adjacency -- the same
-    rotation transform `shortest_path_by_segment`/`geodesically_
-    canonicalize_point` use to unfold one shared edge at a time,
-    generalized from a single corridor to a whole BFS tree. Every face in
-    `faces` must be reachable from `faces[0]` via `face_on_edge` without
-    leaving the set (true of `_relaxation_neighborhood`'s own `faces`,
-    since it discovers them by exactly that kind of traversal).
-    """
-    relevant = set(faces)
-    root = faces[0]
-    unfolded: dict[TessellationFace, np.ndarray] = {
-        root: _canonical_local_frame(root),
-    }
-    queue = collections.deque([root])
-    while queue:
-      face = queue.popleft()
-      face_frame = unfolded[face]
-      for direction in IsometricDirection:
-        neighbor = face.face_on_edge(direction)
-        if (neighbor is None or neighbor not in relevant
-            or neighbor in unfolded):
-          continue
-
-        vertex_a = face.vertex_at(
-            IsometricDirection((direction.value + 1) % 3))
-        vertex_b = face.vertex_at(
-            IsometricDirection((direction.value + 2) % 3))
-        pos_a = face_frame[(direction.value + 1) % 3]
-        pos_b = face_frame[(direction.value + 2) % 3]
-
-        neighbor_local = _canonical_local_frame(neighbor)
-        local_a = neighbor_local[neighbor.direction_toward_vertex(vertex_a).value]
-        local_b = neighbor_local[neighbor.direction_toward_vertex(vertex_b).value]
-
-        # Rotation mapping `neighbor`'s own local edge vector onto its
-        # already-unfolded counterpart -- "unfolding" `neighbor` flat,
-        # hinged along the shared edge.
-        u = local_b - local_a
-        v = pos_b - pos_a
-        inv_len_sq = 1.0 / (u[0] ** 2 + u[1] ** 2)
-        cos_t = (u[0] * v[0] + u[1] * v[1]) * inv_len_sq
-        sin_t = (u[0] * v[1] - u[1] * v[0]) * inv_len_sq
-        rotation = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
-
-        unfolded[neighbor] = np.array([
-            pos_a + rotation @ (neighbor_local[k] - local_a)
-            for k in range(3)
-        ])
-        queue.append(neighbor)
-    return unfolded
-
-  @staticmethod
-  def _relaxation_pass(
-      positions: dict[object, np.ndarray],
-      edges: Sequence[tuple[object, object, float]],
-      mobility: dict[object, float],
-  ) -> None:
-    """One position-based-dynamics sweep: for each edge, nudges both
-    endpoints toward satisfying its rest length, weighted by mobility
-    (`0` pinned, `1` fully free) -- see the plan.
-    """
-    for key_a, key_b, rest_length in edges:
-      pos_a = positions[key_a]
-      pos_b = positions[key_b]
-      delta = pos_a - pos_b
-      current_length = float(np.linalg.norm(delta))
-      if current_length < 1e-12:
-        continue
-      weight_a = mobility[key_a]
-      weight_b = mobility[key_b]
-      total_weight = weight_a + weight_b
-      if total_weight < 1e-12:
-        continue
-      direction = delta / current_length
-      correction = _SOR_FACTOR * (current_length - rest_length)
-      positions[key_a] = (
-          pos_a - direction * (weight_a / total_weight) * correction)
-      positions[key_b] = (
-          pos_b + direction * (weight_b / total_weight) * correction)
+      if weighted:
+        blended[nearby_face] = _blend_transforms(weighted)
+    return blended
 
   @staticmethod
   def _resolve_target(
-      target: IsometricPoint, positions: dict[object, np.ndarray],
+      target: IsometricPoint,
+      blended: dict[TessellationFace, _AffineTransform2D],
   ) -> tuple[float, float]:
-    """`target`'s relaxed 2D position.
-
-    If `target` coincides exactly with one of its own face's lattice
-    sample points (the common case: mesh vertices and other lattice-
-    aligned points always are one), its own already-relaxed position is
-    used directly -- exact, not an approximation. Otherwise, falls back
-    to barycentric interpolation of its face's 3 corner nodes' relaxed
-    positions, treating the relaxed face as still locally affine, the
-    same simplification other callers in this project already accept for
-    reading a position off a parameterized triangle (e.g.
-    `flat_mesh_export.py`).
+    """`target`'s flattened 2D position, via the already-blended
+    per-face transform dict from `_blended_transforms_at`.
 
     Raises:
-      ValueError: If `target`'s face lies outside `RELAXATION_RADIUS` of
-        `center` (i.e. wasn't part of the relaxed neighborhood).
+      ValueError: If `target`'s face has no transform in `blended` (out
+        of every blended anchor's precomputed range).
     """
-    face = target.grid
-    if isinstance(face, RelaxableFace):
-      key = face.dedup_key_for_point(target)
-      if key is not None:
-        position = positions.get(key)
-        if position is None:
-          raise ValueError(
-              "GenericTessellation.flatten_region: a target's face lies "
-              "outside RELAXATION_RADIUS of center.")
-        return (float(position[0]), float(position[1]))
-
-    wb, ws, wd = target.barycentric
-    try:
-      position = (
-          wb * positions[face.vertex_b]
-          + ws * positions[face.vertex_s]
-          + wd * positions[face.vertex_d])
-    except KeyError as error:
+    transform = blended.get(target.grid)
+    if transform is None:
       raise ValueError(
           "GenericTessellation.flatten_region: a target's face lies "
-          "outside RELAXATION_RADIUS of center.") from error
+          "outside every anchor's precomputed range.")
+    position = transform.apply(_local_xy(target))
     return (float(position[0]), float(position[1]))
 
   @override
@@ -728,14 +696,13 @@ class GenericTessellation(Tessellation):
     """Hook for updating internal state when mesh topology changes."""
     super().on_vertex_added(vertex)
     self.invalidate_solvers()
-    self.invalidate_relaxation_caches()
 
   @override
   def on_face_added(self, face: TessellationFace) -> None:
     """Hook for updating internal state when mesh topology changes."""
     super().on_face_added(face)
     self.invalidate_solvers()
-    self.invalidate_relaxation_caches()
+    self._invalidate_flatten_transforms_near(face)
 
   def invalidate_solvers(self) -> None:
     """Invalidates cached matrix factorizations when topology changes."""
@@ -743,17 +710,34 @@ class GenericTessellation(Tessellation):
     self._heat_solver = None
     self._poisson_solver = None
 
-  def invalidate_relaxation_caches(self) -> None:
-    """Invalidates `flatten_region`'s caches when topology changes.
+  @staticmethod
+  def _invalidate_flatten_transforms_near(new_face: TessellationFace) -> None:
+    """Clears `flatten_local_face_transform` for every face and vertex
+    whose precomputed value could now be stale because of `new_face`.
 
-    Not selective (clears every cached neighborhood/position, not just
-    ones a specific new face/vertex could actually affect) -- simple and
-    correct, at the cost of some rework if the mesh is mutated frequently
-    after caches are already warm (not the primary use case -- see the
-    plan).
+    A no-op if this mesh isn't using precomputed flattening at all
+    (`new_face` isn't a `FlattenTransformMixin`). Otherwise selective,
+    not mesh-wide: every face within `RELAXATION_RADIUS` of `new_face`
+    is invalidated, plus every vertex adjacent to one of those faces --
+    deliberately wider than the raw discovery result, since a vertex
+    just past the distance cutoff (so the discovery search never reached
+    it directly) can still be adjacent to a face that *was* discovered,
+    and that vertex's own blended transform depends on that face's dict.
     """
-    self._relaxation_neighborhoods = {}
-    self._flatten_position_cache = {}
+    if not isinstance(new_face, FlattenTransformMixin):
+      return
+
+    _, nearby_faces, _ = _discover_nearby(
+        new_face._adjacent_vertices, RELAXATION_RADIUS)
+
+    vertices_to_invalidate: set[TessellationVertex] = set()
+    for stale_face in nearby_faces:
+      stale_face.invalidate_flatten_transform()
+      vertices_to_invalidate.update(
+          (stale_face.vertex_b, stale_face.vertex_s, stale_face.vertex_d))
+    for vertex in vertices_to_invalidate:
+      if isinstance(vertex, FlattenTransformMixin):
+        vertex.invalidate_flatten_transform()
 
   def _build_solvers(self) -> None:
     """Builds solvers for heat-based distance calculations.

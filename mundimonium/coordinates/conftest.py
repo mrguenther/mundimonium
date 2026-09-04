@@ -27,13 +27,14 @@ _BASE_FACES = [
 ]
 
 
-def build_icosahedron(face_type=None):
+def build_icosahedron(face_type=None, vertex_type=None):
   """A `GenericTessellation` populated as a regular icosahedron.
 
   Returns (tessellation, vertices, faces).
   """
-  tess = GenericTessellation(face_type=face_type)
-  verts = [TessellationVertex(list(v)) for v in _BASE_RAW]
+  tess = GenericTessellation(face_type=face_type, vertex_type=vertex_type)
+  vertex_cls = vertex_type or TessellationVertex
+  verts = [vertex_cls(list(v)) for v in _BASE_RAW]
   faces = [
       tess.add_face([verts[a], verts[b], verts[c]])
       for a, b, c in _BASE_FACES
@@ -46,7 +47,7 @@ def icosahedron():
   return build_icosahedron()
 
 
-def build_stellated_icosahedron(face_type=None):
+def build_stellated_icosahedron(face_type=None, vertex_type=None):
   """A `GenericTessellation` shaped like a stellated icosahedron.
 
   Each of the 20 icosahedron faces is replaced by a regular tetrahedron
@@ -68,8 +69,9 @@ def build_stellated_icosahedron(face_type=None):
   original face (in `_BASE_FACES` order), each triple ordered
   `(apex, va, vb), (apex, vb, vc), (apex, vc, va)`.
   """
-  tess = GenericTessellation(face_type=face_type)
-  base_verts = [TessellationVertex(list(v)) for v in _BASE_RAW]
+  tess = GenericTessellation(face_type=face_type, vertex_type=vertex_type)
+  vertex_cls = vertex_type or TessellationVertex
+  base_verts = [vertex_cls(list(v)) for v in _BASE_RAW]
 
   a0, b0 = _BASE_FACES[0][0], _BASE_FACES[0][1]
   edge_length = float(np.linalg.norm(
@@ -88,7 +90,7 @@ def build_stellated_icosahedron(face_type=None):
     normal = normal / np.linalg.norm(normal)
     if np.dot(normal, centroid) < 0:  # keep the apex pointing outward
       normal = -normal
-    apex_vertex = TessellationVertex(list(centroid + normal * apex_height))
+    apex_vertex = vertex_cls(list(centroid + normal * apex_height))
     apex_verts.append(apex_vertex)
 
     va_v, vb_v, vc_v = base_verts[a], base_verts[b], base_verts[c]
