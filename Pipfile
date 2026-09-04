@@ -10,9 +10,10 @@ pytest = "*"
 mypy = "*"
 pycodestyle = "*"
 numpy = "*"
+scipy = "*"
 networkx = "*"
 pillow = "*"
 noise = "*"
 
 [requires]
-python_version = "3.8"
+python_version = "3.14"
