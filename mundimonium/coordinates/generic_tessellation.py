@@ -8,6 +8,7 @@ from mundimonium.coordinates.isometric import (
     IsometricDirection, IsometricPoint
 )
 
+from collections.abc import Sequence
 from numbers import Number
 from typing import override
 import heapq
@@ -83,6 +84,15 @@ class GenericTessellation(Tessellation):
   @override
   def coords_at_point(self, point: IsometricPoint) -> tuple[Number, ...]:
     """Returns the coordinates of the specified point."""
+    raise NotImplementedError()
+
+  @override
+  def flatten_region(
+      self, center: IsometricPoint, targets: Sequence[IsometricPoint],
+  ) -> list[tuple[Number, Number]]:
+    """Not supported: `GenericTessellation` has no closed-form embedding
+    or persistent neighborhood-flattening mechanism to build this from.
+    """
     raise NotImplementedError()
 
   @override

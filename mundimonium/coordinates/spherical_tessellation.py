@@ -5,6 +5,7 @@ from mundimonium.coordinates.tessellation import (
 )
 from mundimonium.coordinates.isometric import IsometricPoint
 
+from collections.abc import Sequence
 from typing import Self, override
 import math
 import numpy as np
@@ -343,6 +344,72 @@ class SphericalTessellation(Tessellation):
         np.array(self._center, dtype=np.float64)
         + self._radius * self._point_to_3d_unit(point)
     )
+
+  @override
+  def flatten_region(
+      self, center: IsometricPoint, targets: Sequence[IsometricPoint],
+  ) -> list[tuple[float, float]]:
+    """Maps `targets` into an azimuthal-equidistant 2D projection centered
+    at `center` -- the sphere's exponential map, in closed form.
+
+    The `(e_x, e_y)` tangent basis (which direction is "up" in the
+    result) is an arbitrary-but-stable convention, not a load-bearing
+    choice -- see `_tangent_basis`.
+
+    Args:
+      center: The point the flattened region is centered on.
+      targets: The points to flatten, in any order, anywhere on the mesh.
+
+    Returns:
+      One `(x, y)` pair per point in `targets`, in the same order.
+
+    Raises:
+      ValueError: If any point in `targets` is antipodal to `center`,
+        whose direction from `center` is undefined.
+    """
+    if not targets:
+      return []
+
+    center_dir = self._point_to_3d_unit(center)
+    target_dirs = np.array(
+        [self._point_to_3d_unit(target) for target in targets],
+        dtype=np.float64)
+
+    cos_angle = np.clip(target_dirs @ center_dir, -1.0, 1.0)
+    angle = np.arccos(cos_angle)
+
+    tangent = target_dirs - np.outer(cos_angle, center_dir)
+    tangent_length = np.linalg.norm(tangent, axis=1)
+    if np.any((tangent_length < 1e-9) & (angle > 1e-9)):
+      raise ValueError(
+          "flatten_region: a target is antipodal to center, whose "
+          "direction from center is undefined.")
+    safe_length = np.where(tangent_length > 1e-12, tangent_length, 1.0)
+    tangent_unit = tangent / safe_length[:, np.newaxis]
+
+    e_x, e_y = self._tangent_basis(center_dir)
+    x = angle * self._radius * (tangent_unit @ e_x)
+    y = angle * self._radius * (tangent_unit @ e_y)
+    return list(zip(x.tolist(), y.tolist()))
+
+  def _tangent_basis(
+      self, direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """An arbitrary-but-stable orthonormal basis for the plane
+    perpendicular to `direction`, a unit vector.
+
+    Built by Gram-Schmidt against a fixed reference axis (switched to a
+    second axis if `direction` is too close to the first, to avoid a
+    near-degenerate basis). Which reference axis is used isn't
+    meaningful -- it only fixes an arbitrary "which way is up" convention
+    for `flatten_region`'s output.
+    """
+    reference = np.array([0.0, 0.0, 1.0])
+    if abs(np.dot(reference, direction)) > 0.9:
+      reference = np.array([1.0, 0.0, 0.0])
+    e_x = reference - np.dot(reference, direction) * direction
+    e_x /= np.linalg.norm(e_x)
+    e_y = np.cross(direction, e_x)
+    return e_x, e_y
 
   def _point_to_3d_unit(self, pt: IsometricPoint) -> np.ndarray:
     """Returns a unit vector pointing from the sphere's center toward `point`.

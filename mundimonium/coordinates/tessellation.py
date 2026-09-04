@@ -10,6 +10,8 @@ from mundimonium.coordinates.isometric import (
 )
 from mundimonium.utils.sequence_view import SequenceView
 
+from collections.abc import Sequence
+
 import abc
 import functools
 import itertools
@@ -153,6 +155,28 @@ class Tessellation(abc.ABC):
 
     The coordinate system used by `coords` (including the number of coordinates
     in the tuple) is implementation-defined.
+    """
+    raise NotImplementedError()
+
+  @abc.abstractmethod
+  def flatten_region(
+      self, center: IsometricPoint, targets: Sequence[IsometricPoint],
+  ) -> list[tuple[Number, Number]]:
+    """Maps `targets` into a locally flat 2D coordinate system at `center`.
+
+    This is the Riemannian log map at `center`: each returned `(x, y)`
+    satisfies `hypot(x, y) == self.distance(center, target)` exactly, with
+    the angle encoding `target`'s direction from `center`. Output is in
+    this tessellation's own true geodesic-distance units.
+
+    Subclasses that don't support this should raise `NotImplementedError`.
+
+    Args:
+      center: The point the flattened region is centered on.
+      targets: The points to flatten, in any order, anywhere on the mesh.
+
+    Returns:
+      One `(x, y)` pair per point in `targets`, in the same order.
     """
     raise NotImplementedError()
 

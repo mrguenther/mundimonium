@@ -232,6 +232,42 @@ def test_geodesic_distance_matches_sum_of_segment_hyperbolic_lengths(tess):
 
 
 # ---------------------------------------------------------------------------
+# flatten_region
+# ---------------------------------------------------------------------------
+
+def test_flatten_region_preserves_distance_to_center(tess):
+  rng = random.Random(6)
+  center = _random_point(_random_stable_face(tess, rng), rng)
+  targets = [
+      _random_point(_random_stable_face(tess, rng), rng) for _ in range(5)]
+  positions = tess.flatten_region(center, targets)
+  for target, (x, y) in zip(targets, positions):
+    expected = tess.geodesic_distance(center, target)
+    assert math.hypot(x, y) == pytest.approx(expected, rel=1e-6)
+
+
+def test_flatten_region_of_center_itself_is_the_origin(tess):
+  center = tess.faces[0].centroid_local_coords
+  [(x, y)] = tess.flatten_region(center, [center])
+  assert (x, y) == pytest.approx((0.0, 0.0), abs=1e-9)
+
+
+def test_flatten_region_different_vertices_of_a_face_get_different_angles(tess):
+  face = tess.faces[0]
+  center = face.centroid_local_coords
+  vertex_b_point = IsometricPoint(face, face.altitude, 0.0)
+  vertex_s_point = IsometricPoint(face, 0.0, face.altitude)
+  (xb, yb), (xs, ys) = tess.flatten_region(
+      center, [vertex_b_point, vertex_s_point])
+  assert math.atan2(yb, xb) != pytest.approx(math.atan2(ys, xs), abs=1e-3)
+
+
+def test_flatten_region_of_no_targets_returns_an_empty_list(tess):
+  center = tess.faces[0].centroid_local_coords
+  assert tess.flatten_region(center, []) == []
+
+
+# ---------------------------------------------------------------------------
 # geodesically_canonicalize_point
 # ---------------------------------------------------------------------------
 

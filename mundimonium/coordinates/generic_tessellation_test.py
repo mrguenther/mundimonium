@@ -33,6 +33,8 @@ def test_coords_related_methods_are_not_implemented(generic_mesh):
     tess.get_face_at_coords(0.0, 0.0)
   with pytest.raises(NotImplementedError):
     tess.coords_at_point(point)
+  with pytest.raises(NotImplementedError):
+    tess.flatten_region(point, [point])
 
 
 # ---------------------------------------------------------------------------

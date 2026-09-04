@@ -126,6 +126,60 @@ def test_get_face_at_coords_agrees_with_brute_force_containment(fine_sphere):
 
 
 # ---------------------------------------------------------------------------
+# flatten_region
+# ---------------------------------------------------------------------------
+
+def test_flatten_region_preserves_distance_to_center(sphere):
+  center = sphere.new_point_at_coords(1.0, 1.0)
+  targets = [
+      sphere.new_point_at_coords(0.5, 0.5),
+      sphere.new_point_at_coords(2.0, 4.0),
+      sphere.new_point_at_coords(1.2, 0.9),
+  ]
+  positions = sphere.flatten_region(center, targets)
+  for target, (x, y) in zip(targets, positions):
+    expected = sphere.geodesic_distance(center, target)
+    assert math.hypot(x, y) == pytest.approx(expected, rel=1e-6)
+
+
+def test_flatten_region_of_center_itself_is_the_origin(fine_sphere):
+  center = fine_sphere.new_point_at_coords(1.0, 1.0)
+  [(x, y)] = fine_sphere.flatten_region(center, [center])
+  assert (x, y) == pytest.approx((0.0, 0.0), abs=1e-9)
+
+
+def test_flatten_region_from_the_pole_matches_colatitude_times_radius():
+  sphere = SphericalTessellation(radius=3.0, frequency=3)
+  center = sphere.new_point_at_coords(0.0, 0.0)  # north pole
+  target = sphere.new_point_at_coords(0.4, 1.7)
+  [(x, y)] = sphere.flatten_region(center, [target])
+  assert math.hypot(x, y) == pytest.approx(0.4 * 3.0, rel=1e-6)
+
+
+def test_flatten_region_targets_in_different_directions_get_different_angles(
+    fine_sphere):
+  center = fine_sphere.new_point_at_coords(1.0, 1.0)
+  target_a = fine_sphere.new_point_at_coords(1.2, 1.0)
+  target_b = fine_sphere.new_point_at_coords(1.0, 1.2)
+  (xa, ya), (xb, yb) = fine_sphere.flatten_region(
+      center, [target_a, target_b])
+  assert math.atan2(ya, xa) != pytest.approx(math.atan2(yb, xb), abs=1e-3)
+
+
+def test_flatten_region_raises_for_an_antipodal_target():
+  sphere = SphericalTessellation(radius=1.0, frequency=2)
+  center = sphere.new_point_at_coords(0.0, 0.0)
+  target = sphere.new_point_at_coords(math.pi, 0.0)
+  with pytest.raises(ValueError):
+    sphere.flatten_region(center, [target])
+
+
+def test_flatten_region_of_no_targets_returns_an_empty_list(fine_sphere):
+  center = fine_sphere.new_point_at_coords(1.0, 1.0)
+  assert fine_sphere.flatten_region(center, []) == []
+
+
+# ---------------------------------------------------------------------------
 # geodesic_distance / shortest_path
 # ---------------------------------------------------------------------------
 

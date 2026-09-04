@@ -6,6 +6,7 @@ from mundimonium.coordinates.tessellation import (
     Tessellation, TessellationFace, TessellationVertex
 )
 
+from collections.abc import Sequence
 from numbers import Number
 from typing import override
 import cmath
@@ -1625,6 +1626,59 @@ class HyperbolicTessellation(Tessellation):
     p2_minkowski = _minkowski_of_klein(
         *self._klein_of_barycentric(p2.grid, p2.barycentric))
     return _hyperbolic_distance(p1_minkowski, p2_minkowski)
+
+  @override
+  def flatten_region(
+      self, center: IsometricPoint, targets: Sequence[IsometricPoint],
+  ) -> list[tuple[float, float]]:
+    """Maps `targets` into a locally flat 2D coordinate system at `center`
+    -- the hyperbolic exponential map, in closed form.
+
+    Exact, unlike `geodesically_canonicalize_point`'s centroid-only
+    version of this same idea: that one needs `_compute_conformal_scale`'s
+    calibration because it starts from a *flat local frame* displacement,
+    only an approximation of a face's true hyperbolic shape. This method
+    starts and ends with exact Klein/Poincare coordinates on both `center`
+    and each target, so no such approximation -- or its calibration -- is
+    needed.
+
+    The Mobius transform sending `center` to the Poincare disk's origin
+    (`_to_origin_poincare`) is an isometry, so `target`'s position in that
+    recentered frame gives its exact hyperbolic distance and direction
+    from `center` directly: distance via the Poincare exponential map's
+    inverse (`2 * arctanh(radius)`), direction via its angle.
+
+    Args:
+      center: The point the flattened region is centered on.
+      targets: The points to flatten, in any order, anywhere on the mesh.
+
+    Returns:
+      One `(x, y)` pair per point in `targets`, in the same order.
+    """
+    if not targets:
+      return []
+    self._ensure_in_range(center, *targets)
+
+    center_klein = self._klein_of_barycentric(
+        center.grid, center.barycentric)
+    center_poincare = _poincare_of_klein(*center_klein)
+
+    target_poincare = np.array(
+        [
+            _poincare_of_klein(*self._klein_of_barycentric(
+                target.grid, target.barycentric))
+            for target in targets
+        ],
+        dtype=np.complex128)
+
+    recentered = _to_origin_poincare(target_poincare, center_poincare)
+    radius = np.clip(np.abs(recentered), 0.0, 1.0 - 1e-12)
+    distance = 2.0 * np.arctanh(radius)
+    angle = np.angle(recentered)
+
+    x = distance * np.cos(angle)
+    y = distance * np.sin(angle)
+    return list(zip(x.tolist(), y.tolist()))
 
   @override
   def shortest_path_by_segment(
