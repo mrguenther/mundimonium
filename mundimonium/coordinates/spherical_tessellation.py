@@ -329,6 +329,7 @@ class SphericalTessellation(Tessellation):
 
     self._base_face_normals = np.array(base_face_normals, dtype=np.float64)
 
+  @override
   def point_to_3d_position(self, point: IsometricPoint) -> np.ndarray:
     """Returns the 3D world-space position of `point` on the sphere's surface.
 

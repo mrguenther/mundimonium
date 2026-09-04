@@ -35,6 +35,16 @@ const FLAT_MODE_THRESHOLD = 5.0;
 // first sector from the most recently rendered frontier.
 const DEBUG_SUBDIVIDE_KEY = 'g';
 
+// Debug-only toggle between the spherical world and the fixed
+// `GenericTessellation` demo shape (a stellated icosahedron -- see
+// `mundimonium/rendering/generic_demo.py`). `'generic'` only supports the
+// plain static `get_mesh`/`get_items` endpoints so far (no LOD streaming,
+// no flat-map mode -- see the plan's Phase 9), so this bypasses the
+// camera-driven LOD refresh loop entirely while showing it, rather than
+// making that loop generic-aware for a feature it doesn't support yet.
+const DEBUG_TOGGLE_GENERIC_KEY = 't';
+const GENERIC_TESSELLATION = { tessellation: 'generic' };
+
 function setStatus(text) {
   statusElement.textContent = text;
 }
@@ -72,6 +82,11 @@ async function main() {
   let mesh;
   let lastSectors = [];
   const itemGroup = new THREE.Group();
+
+  // True exactly while `DEBUG_TOGGLE_GENERIC_KEY`'s demo mesh is showing --
+  // suppresses the camera-driven LOD/flat-mode refresh loop below, which
+  // only knows how to talk to the spherical world's endpoints.
+  let viewingGenericDemo = false;
 
   // Non-null exactly while the flat map is the active mode. Its camera is
   // rebuilt fresh each time flat mode is entered; `flatModeCameraPosition`
@@ -193,7 +208,7 @@ async function main() {
   }
 
   orbitController.onChange(() => {
-    if (switchingModes) {
+    if (switchingModes || viewingGenericDemo) {
       return;
     }
     const cameraPosition = cameraPositionArray(orbitController.camera);
@@ -221,6 +236,49 @@ async function main() {
         .then(refresh)
         .catch((error) => setStatus(`Failed to subdivide: ${error.message}`));
   });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== DEBUG_TOGGLE_GENERIC_KEY || flatController) {
+      return; // no generic flat-map support yet -- stay in whichever mode
+    }
+    toggleGenericDemo().catch((error) => {
+      setStatus(`Failed to toggle generic demo: ${error.message}`);
+    });
+  });
+
+  async function toggleGenericDemo() {
+    if (switchingModes) {
+      return;
+    }
+    switchingModes = true;
+    try {
+      const cameraPosition = cameraPositionArray(orbitController.camera);
+      if (viewingGenericDemo) {
+        // Back to the spherical world, exactly as on initial load.
+        const meshData = await window.mundimonium.getLodMesh(
+            { ...TESSELLATION, cameraPosition });
+        lastSectors = meshData.sectors;
+        mesh.geometry.dispose();
+        mesh.geometry = buildGeometry(meshData);
+        viewingGenericDemo = false;
+        await refreshItems();
+      } else {
+        const meshData = await window.mundimonium.getMesh(GENERIC_TESSELLATION);
+        lastSectors = []; // subdivide/LOD refresh isn't supported here
+        mesh.geometry.dispose();
+        mesh.geometry = buildGeometry(meshData);
+        viewingGenericDemo = true;
+        const { items } = await window.mundimonium.getItems(
+            { ...GENERIC_TESSELLATION, cameraPosition });
+        itemGroup.clear();
+        for (const sprite of buildItemSprites(items)) {
+          itemGroup.add(sprite);
+        }
+      }
+    } finally {
+      switchingModes = false;
+    }
+  }
 }
 
 main();

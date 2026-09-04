@@ -267,6 +267,15 @@ def test_flatten_region_of_no_targets_returns_an_empty_list(tess):
   assert tess.flatten_region(center, []) == []
 
 
+def test_point_to_3d_position_is_not_supported(tess):
+  # `projection_coordinates` here are Minkowski, not Euclidean 3D -- see
+  # `mesh_export.tessellation_to_buffers`'s docstring for why this
+  # tessellation isn't wired into the rendering pipeline.
+  center = tess.faces[0].centroid_local_coords
+  with pytest.raises(NotImplementedError):
+    tess.point_to_3d_position(center)
+
+
 # ---------------------------------------------------------------------------
 # geodesically_canonicalize_point
 # ---------------------------------------------------------------------------

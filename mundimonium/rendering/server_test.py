@@ -4,7 +4,9 @@ import numpy as np
 
 from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshFace
+from mundimonium.coordinates.relaxable_lod_mesh import RelaxableLodMeshFace
 from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
+from mundimonium.rendering import server
 from mundimonium.rendering.protocol import read_frame, write_frame
 from mundimonium.rendering.server import dispatch, serve
 
@@ -30,6 +32,24 @@ def test_get_mesh_returns_a_mesh_response_for_a_known_tessellation():
   assert len(response_body) == (
       response_header['positions_byte_length']
       + response_header['indices_byte_length'])
+
+
+def test_get_mesh_returns_a_mesh_response_for_the_generic_demo():
+  header = {'type': 'get_mesh', 'id': '1b', 'tessellation': 'generic'}
+  response_header, response_body = dispatch(header, b'')
+  assert response_header['type'] == 'mesh'
+  assert response_header['id'] == '1b'
+  assert response_header['vertex_count'] == 32
+  assert response_header['face_count'] == 60
+  assert len(response_body) == (
+      response_header['positions_byte_length']
+      + response_header['indices_byte_length'])
+
+  # The demo tessellation's face type participates in the same LOD-tree
+  # machinery the spherical case uses (see `relaxable_lod_mesh.py`), even
+  # though this phase doesn't exercise LOD streaming for it.
+  demo = server._get_generic_demo_tessellation()
+  assert isinstance(demo.faces[0], RelaxableLodMeshFace)
 
 
 def test_unknown_request_type_returns_an_error_not_a_crash():
@@ -163,6 +183,27 @@ def test_get_items_returns_seeded_demo_items_but_not_the_scale_gated_one_far_awa
   labels = {item['label'] for item in response_header['items']}
   assert {'Anchorhold', 'Millbrook', 'Stonegate'} <= labels
   assert 'Hiddenreach' not in labels
+  for item in response_header['items']:
+    assert item['kind'] == 'city'
+    assert {'x', 'y', 'z'} <= item.keys()
+
+
+def test_get_items_returns_seeded_generic_demo_items():
+  header = {
+      'type': 'get_items', 'id': '9b', 'tessellation': 'generic',
+      'camera_position': [10.0, 0.0, 0.0],
+  }
+  response_header, response_body = dispatch(header, b'')
+  assert response_header['type'] == 'items'
+  assert response_header['id'] == '9b'
+  assert response_body == b''
+
+  # `GenericTessellation` has no generic notion of camera altitude yet
+  # (see `item_export._scale_from_camera`'s docstring), so every seeded
+  # item -- including the one that would be scale-gated on the spherical
+  # demo -- is visible regardless of `camera_position`.
+  labels = {item['label'] for item in response_header['items']}
+  assert labels == {'Anchorhold', 'Millbrook', 'Stonegate', 'Hiddenreach'}
   for item in response_header['items']:
     assert item['kind'] == 'city'
     assert {'x', 'y', 'z'} <= item.keys()

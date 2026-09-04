@@ -1681,6 +1681,16 @@ class HyperbolicTessellation(Tessellation):
     return list(zip(x.tolist(), y.tolist()))
 
   @override
+  def point_to_3d_position(self, point: IsometricPoint) -> np.ndarray:
+    """Not supported: `TessellationVertex.projection_coordinates` here are
+    Minkowski `(X, Y, Z)` coordinates, not a Euclidean 3D embedding (see
+    `mesh_export.tessellation_to_buffers`'s docstring for the same
+    caveat) -- this tessellation isn't wired into the rendering pipeline
+    at all yet.
+    """
+    raise NotImplementedError()
+
+  @override
   def shortest_path_by_segment(
       self, p1: IsometricPoint, p2: IsometricPoint,
   ) -> list[tuple[IsometricPoint, IsometricPoint]]:

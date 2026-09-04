@@ -558,6 +558,28 @@ class GenericTessellation(Tessellation):
     raise NotImplementedError()
 
   @override
+  def point_to_3d_position(self, point: IsometricPoint) -> np.ndarray:
+    """The 3D world-space position of `point`, via barycentric blending
+    of its own face's 3 corners' `projection_coordinates` -- exact, since
+    a mesh face is a flat triangle in 3D by construction.
+
+    Raises:
+      NotImplementedError: If `self._euclidean` is `False` -- `projection_
+        coordinates` then isn't an accurate Euclidean embedding (see
+        `__init__`'s own `euclidean` parameter).
+    """
+    if not self._euclidean:
+      raise NotImplementedError(
+          "GenericTessellation.point_to_3d_position: requires an accurate "
+          "Euclidean embedding (euclidean=True).")
+    face = point.grid
+    wb, ws, wd = point.barycentric
+    return (
+        wb * np.array(face.vertex_b.projection_coordinates, dtype=np.float64)
+        + ws * np.array(face.vertex_s.projection_coordinates, dtype=np.float64)
+        + wd * np.array(face.vertex_d.projection_coordinates, dtype=np.float64))
+
+  @override
   def flatten_region(
       self, center: IsometricPoint, targets: Sequence[IsometricPoint],
   ) -> list[tuple[float, float]]:

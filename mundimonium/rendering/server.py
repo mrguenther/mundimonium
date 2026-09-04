@@ -4,7 +4,9 @@ from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshFace
 from mundimonium.coordinates.nesting_iso_grid import SectorItem
 from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
+from mundimonium.coordinates.tessellation import Tessellation
 from mundimonium.rendering import flat_mesh_export
+from mundimonium.rendering import generic_demo
 from mundimonium.rendering import item_export
 from mundimonium.rendering import lod_mesh_export
 from mundimonium.rendering.mesh_export import tessellation_to_buffers
@@ -55,13 +57,31 @@ def _get_lod_tessellation(radius: float, frequency: int) -> SphericalTessellatio
   return tessellation
 
 
+# The `GenericTessellation` demo content is a single fixed shape (unlike
+# the spherical case's tunable `radius`/`frequency`), so this needs no
+# cache key -- just a lazily-built singleton, persisting across requests
+# within a subprocess's lifetime the same way `_lod_tessellations` does.
+_generic_demo_tessellation: Tessellation | None = None
+
+
+def _get_generic_demo_tessellation() -> Tessellation:
+  """Returns the persistent demo `GenericTessellation`, building
+  (and `generic_demo`-seeding) it the first time it's requested."""
+  global _generic_demo_tessellation
+  if _generic_demo_tessellation is None:
+    _generic_demo_tessellation = generic_demo.build_demo_tessellation()
+  return _generic_demo_tessellation
+
+
 def _handle_get_mesh(header: dict) -> tuple[dict, bytes]:
   """Handles a `get_mesh` request.
 
   Args:
-    header: The request header. Must include `tessellation` (currently
-      only `'spherical'` is supported) plus that tessellation type's own
-      construction parameters (`radius`, `frequency` for `'spherical'`).
+    header: The request header. Must include `tessellation` (`'spherical'`
+      or `'generic'`) plus, for `'spherical'`, that tessellation type's
+      own construction parameters (`radius`, `frequency`). `'generic'`
+      always returns the same fixed demo shape (see `generic_demo.py`),
+      no construction parameters needed.
 
   Returns:
     A `(response_header, response_body)` pair -- a `mesh` response with
@@ -75,6 +95,8 @@ def _handle_get_mesh(header: dict) -> tuple[dict, bytes]:
     tessellation = SphericalTessellation(
         radius=header.get('radius', 1.0),
         frequency=header.get('frequency', 1))
+  elif tessellation_kind == 'generic':
+    tessellation = _get_generic_demo_tessellation()
   else:
     raise ValueError(f"Unknown tessellation kind: {tessellation_kind!r}")
 
@@ -217,10 +239,10 @@ def _handle_get_items(header: dict) -> tuple[dict, bytes]:
   """Handles a `get_items` request.
 
   Args:
-    header: The request header. Must include `tessellation` (currently
-      only `'spherical'` is supported), that tessellation type's own
-      construction parameters (`radius`, `frequency`), and
-      `camera_position`.
+    header: The request header. Must include `tessellation` (`'spherical'`
+      or `'generic'`), that tessellation type's own construction
+      parameters (`radius`, `frequency` for `'spherical'`; none for
+      `'generic'`), and `camera_position`.
 
   Returns:
     A `(response_header, response_body)` pair -- an `items` response
@@ -231,11 +253,14 @@ def _handle_get_items(header: dict) -> tuple[dict, bytes]:
     ValueError: If `header["tessellation"]` isn't a supported kind.
   """
   tessellation_kind = header.get('tessellation')
-  if tessellation_kind != 'spherical':
+  if tessellation_kind == 'spherical':
+    tessellation = _get_lod_tessellation(
+        header.get('radius', 1.0), header.get('frequency', 1))
+  elif tessellation_kind == 'generic':
+    tessellation = _get_generic_demo_tessellation()
+  else:
     raise ValueError(f"Unknown tessellation kind: {tessellation_kind!r}")
 
-  tessellation = _get_lod_tessellation(
-      header.get('radius', 1.0), header.get('frequency', 1))
   items = [
       {**payload, 'x': x, 'y': y, 'z': z}
       for payload, x, y, z

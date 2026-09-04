@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshSector
-from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
+from mundimonium.coordinates.tessellation import Tessellation
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -19,7 +19,7 @@ DEFAULT_MAX_DEPTH = 6
 
 @dataclass(frozen=True)
 class SectorAddress:
-  """Identifies one `LodMeshSector` within a `SphericalTessellation`.
+  """Identifies one `LodMeshSector` within a `Tessellation`.
 
   `face_index` selects a top-level `LodMeshFace` (`tessellation.faces[
   face_index]`); `path` is the chain of `(i_b, i_s, inverted)` steps from
@@ -46,7 +46,7 @@ class SectorAddress:
 
 
 def resolve_sector_address(
-    tessellation: SphericalTessellation, address: SectorAddress,
+    tessellation: Tessellation, address: SectorAddress,
 ) -> LodMeshSector:
   """Resolves `address` to the `LodMeshSector` it names.
 
@@ -62,7 +62,7 @@ def resolve_sector_address(
 
 
 def select_frontier(
-    tessellation: SphericalTessellation,
+    tessellation: Tessellation,
     camera_position: Sequence[float],
     threshold: float = DEFAULT_LOD_THRESHOLD,
     max_depth: int = DEFAULT_MAX_DEPTH,
@@ -84,8 +84,8 @@ def select_frontier(
   into already-built children rather than undoing anything.
 
   Args:
-    tessellation: A `SphericalTessellation` built with `face_type=
-      LodMeshFace`.
+    tessellation: A `Tessellation` built with a LOD-tree-aware `face_type`
+      (`LodMeshFace`, or `RelaxableLodMeshFace` for a `GenericTessellation`).
     camera_position: The camera's `(x, y, z)` world position.
     threshold: How large (relative to a sector's own altitude) the
       distance to the camera must be before that sector is coarse enough
@@ -109,7 +109,7 @@ def select_frontier(
 
 
 def _select_frontier(
-    tessellation: SphericalTessellation,
+    tessellation: Tessellation,
     sector: LodMeshSector,
     address: SectorAddress,
     camera_position: np.ndarray,
@@ -141,7 +141,7 @@ def _select_frontier(
 
 
 def lod_frontier_to_buffers(
-    tessellation: SphericalTessellation,
+    tessellation: Tessellation,
     frontier: list[tuple[LodMeshSector, SectorAddress]],
 ) -> tuple[bytes, bytes, int, int]:
   """Exports a `select_frontier` result as renderer-ready buffers.
@@ -152,8 +152,8 @@ def lod_frontier_to_buffers(
   shared `TessellationVertex` identity), so triangles at sector boundaries
   don't share vertices.
 
-  Positions are computed via `SphericalTessellation.point_to_3d_position`,
-  so (unlike `mesh_export.py`) this only works for a tessellation whose
+  Positions are computed via `Tessellation.point_to_3d_position`, so
+  (unlike `mesh_export.py`) this only works for a tessellation whose
   `projection_coordinates` are already Euclidean 3D.
 
   Args:
@@ -190,7 +190,7 @@ def lod_frontier_to_buffers(
 
 
 def sector_world_position(
-    tessellation: SphericalTessellation,
+    tessellation: Tessellation,
     sector: LodMeshSector,
     local_point: IsometricPoint,
 ) -> np.ndarray:

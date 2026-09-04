@@ -183,6 +183,26 @@ class Tessellation(abc.ABC):
     """
     raise NotImplementedError()
 
+  @abc.abstractmethod
+  def point_to_3d_position(self, point: IsometricPoint) -> np.ndarray:
+    """Returns the 3D world-space position of `point`.
+
+    Requires `TessellationVertex.projection_coordinates` to already be an
+    accurate Euclidean embedding (see `mesh_export.tessellation_to_
+    buffers`'s own docstring for the same caveat) -- not true for every
+    subclass (e.g. `HyperbolicTessellation`'s `projection_coordinates`
+    are Minkowski, not Euclidean 3D).
+
+    Subclasses that don't support this should raise `NotImplementedError`.
+
+    Args:
+      point: A point on this tessellation's mesh.
+
+    Returns:
+      A `(x, y, z)` position.
+    """
+    raise NotImplementedError()
+
   def on_vertex_added(self, vertex: TessellationVertex) -> None:
     """Hook for subclasses to update internal state when mesh topology changes.
 

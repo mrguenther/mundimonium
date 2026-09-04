@@ -50,6 +50,42 @@ def test_flatten_region_requires_relaxable_face_type(generic_mesh):
 
 
 # ---------------------------------------------------------------------------
+# point_to_3d_position
+# ---------------------------------------------------------------------------
+
+def test_point_to_3d_position_matches_barycentric_blend(generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
+  alt = face.altitude
+  point = IsometricPoint(face, 0.3 * alt, 0.4 * alt)
+  wb, ws, wd = point.barycentric
+  expected = (
+      wb * np.array(face.vertex_b.projection_coordinates)
+      + ws * np.array(face.vertex_s.projection_coordinates)
+      + wd * np.array(face.vertex_d.projection_coordinates))
+  assert tuple(tess.point_to_3d_position(point)) == pytest.approx(
+      tuple(expected))
+
+
+def test_point_to_3d_position_at_a_vertex_is_that_vertex(generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
+  point = IsometricPoint(face, face.altitude, 0.0)  # vertex_b
+  assert tuple(tess.point_to_3d_position(point)) == pytest.approx(
+      face.vertex_b.projection_coordinates)
+
+
+def test_point_to_3d_position_requires_euclidean_embedding():
+  tess = GenericTessellation(euclidean=False)
+  v1 = TessellationVertex([0.0, 0.0, 0.0])
+  v2 = TessellationVertex([1.0, 0.0, 0.0])
+  v3 = TessellationVertex([0.5, 1.0, 0.0])
+  face = tess.add_face([v1, v2, v3])
+  with pytest.raises(NotImplementedError):
+    tess.point_to_3d_position(face.centroid_local_coords)
+
+
+# ---------------------------------------------------------------------------
 # Solver cache invalidation
 # ---------------------------------------------------------------------------
 
