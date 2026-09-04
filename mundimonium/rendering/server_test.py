@@ -142,3 +142,37 @@ def test_subdivide_sector_on_a_bad_address_returns_an_error_not_a_crash():
   assert response_header['type'] == 'error'
   assert response_header['id'] == '8'
   assert response_body == b''
+
+
+# ---------------------------------------------------------------------------
+# get_items
+# ---------------------------------------------------------------------------
+
+def test_get_items_returns_seeded_demo_items_but_not_the_scale_gated_one_far_away():
+  header = {
+      'type': 'get_items', 'id': '9', 'tessellation': 'spherical',
+      'radius': 40.0, 'frequency': 1, 'camera_position': [0.0, 0.0, 4000.0],
+  }
+  response_header, response_body = dispatch(header, b'')
+  assert response_header['type'] == 'items'
+  assert response_header['id'] == '9'
+  assert response_body == b''
+
+  labels = {item['label'] for item in response_header['items']}
+  assert {'Anchorhold', 'Millbrook', 'Stonegate'} <= labels
+  assert 'Hiddenreach' not in labels
+  for item in response_header['items']:
+    assert item['kind'] == 'city'
+    assert {'x', 'y', 'z'} <= item.keys()
+
+
+def test_get_items_reveals_the_scale_gated_item_once_close():
+  radius = 50.0
+  header = {
+      'type': 'get_items', 'id': '10', 'tessellation': 'spherical',
+      'radius': radius, 'frequency': 1,
+      'camera_position': _camera_near_face_0(radius),
+  }
+  response_header, _ = dispatch(header, b'')
+  labels = {item['label'] for item in response_header['items']}
+  assert 'Hiddenreach' in labels

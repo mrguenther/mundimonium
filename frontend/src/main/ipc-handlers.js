@@ -89,6 +89,17 @@ function registerIpcHandlers(pythonBridge, getWindows) {
     });
   });
 
+  ipcMain.handle('items:get', async (_event, request) => {
+    const { header } = await pythonBridge.request({
+      type: 'get_items',
+      tessellation: request.tessellation,
+      radius: request.radius,
+      frequency: request.frequency,
+      camera_position: request.cameraPosition,
+    });
+    return { items: header.items };
+  });
+
   pythonBridge.on('python:status', (status) => {
     for (const window of getWindows()) {
       if (!window.isDestroyed()) {

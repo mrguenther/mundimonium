@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshFace
+from mundimonium.coordinates.nesting_iso_grid import SectorItem
 from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
+from mundimonium.rendering import item_export
 from mundimonium.rendering import lod_mesh_export
 from mundimonium.rendering.mesh_export import tessellation_to_buffers
 from mundimonium.rendering.protocol import read_frame, write_frame
@@ -17,14 +20,36 @@ import traceback
 # scratch every time the camera moves.
 _lod_tessellations: dict[tuple[float, int], SphericalTessellation] = {}
 
+# Hardcoded (face index, label, min_scale, max_scale) demo markers, seeded
+# onto every fresh LOD tessellation purely to prove the item pipeline
+# end-to-end -- not real world-generation content, which doesn't exist yet
+# (see README.md).
+#
+# The last one is deliberately scale-gated to exercise that path; see
+# `item_export.iter_visible_items`'s docstring for what `scale` means. The
+# others use `SectorItem`'s always-visible defaults.
+_DEMO_ITEMS = [
+    (0, 'Anchorhold', 0.0, float('inf')),
+    (5, 'Millbrook', 0.0, float('inf')),
+    (10, 'Stonegate', 0.0, float('inf')),
+    (15, 'Hiddenreach', 2.0, float('inf')),
+]
+
 
 def _get_lod_tessellation(radius: float, frequency: int) -> SphericalTessellation:
-  """Returns the persistent LOD tessellation for `(radius, frequency)`."""
+  """Returns the persistent LOD tessellation for `(radius, frequency)`,
+  seeded with `_DEMO_ITEMS` the first time it's constructed."""
   key = (radius, frequency)
   tessellation = _lod_tessellations.get(key)
   if tessellation is None:
     tessellation = SphericalTessellation(
         radius=radius, frequency=frequency, face_type=LodMeshFace)
+    for face_index, label, min_scale, max_scale in _DEMO_ITEMS:
+      face = tessellation.faces[face_index]
+      face.add_item(SectorItem(
+          position=IsometricPoint.center(face),
+          payload={'kind': 'city', 'label': label},
+          min_scale=min_scale, max_scale=max_scale))
     _lod_tessellations[key] = tessellation
   return tessellation
 
@@ -141,10 +166,43 @@ def _handle_subdivide_sector(header: dict) -> tuple[dict, bytes]:
   return {'type': 'subdivide_sector_ack', 'id': header.get('id')}, b''
 
 
+def _handle_get_items(header: dict) -> tuple[dict, bytes]:
+  """Handles a `get_items` request.
+
+  Args:
+    header: The request header. Must include `tessellation` (currently
+      only `'spherical'` is supported), that tessellation type's own
+      construction parameters (`radius`, `frequency`), and
+      `camera_position`.
+
+  Returns:
+    A `(response_header, response_body)` pair -- an `items` response
+    listing every currently-visible item, each a copy of its payload dict
+    plus `x`/`y`/`z`. Always an empty body; everything is in the header.
+
+  Raises:
+    ValueError: If `header["tessellation"]` isn't a supported kind.
+  """
+  tessellation_kind = header.get('tessellation')
+  if tessellation_kind != 'spherical':
+    raise ValueError(f"Unknown tessellation kind: {tessellation_kind!r}")
+
+  tessellation = _get_lod_tessellation(
+      header.get('radius', 1.0), header.get('frequency', 1))
+  items = [
+      {**payload, 'x': x, 'y': y, 'z': z}
+      for payload, x, y, z
+      in item_export.iter_visible_items(tessellation, header['camera_position'])
+  ]
+
+  return {'type': 'items', 'id': header.get('id'), 'items': items}, b''
+
+
 _HANDLERS: dict[str, Callable[[dict], tuple[dict, bytes]]] = {
     'get_mesh': _handle_get_mesh,
     'get_lod_mesh': _handle_get_lod_mesh,
     'subdivide_sector': _handle_subdivide_sector,
+    'get_items': _handle_get_items,
 }
 
 

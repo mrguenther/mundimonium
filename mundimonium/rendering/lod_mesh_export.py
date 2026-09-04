@@ -120,7 +120,7 @@ def _select_frontier(
     frontier: list[tuple[LodMeshSector, SectorAddress]],
 ) -> None:
   """`select_frontier`'s recursion, appending chosen sectors to `frontier`."""
-  centroid = _sector_world_position(
+  centroid = sector_world_position(
       tessellation, sector, IsometricPoint.center(sector))
   distance = float(np.linalg.norm(camera_position - centroid))
   wants_finer = distance < threshold * sector.altitude and depth < max_depth
@@ -178,7 +178,7 @@ def lod_frontier_to_buffers(
     )
     base_index = len(positions)
     positions.extend(
-        _sector_world_position(tessellation, sector, corner)
+        sector_world_position(tessellation, sector, corner)
         for corner in corners)
     indices.append((base_index, base_index + 1, base_index + 2))
 
@@ -189,7 +189,7 @@ def lod_frontier_to_buffers(
       len(positions), len(frontier))
 
 
-def _sector_world_position(
+def sector_world_position(
     tessellation: SphericalTessellation,
     sector: LodMeshSector,
     local_point: IsometricPoint,

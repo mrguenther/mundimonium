@@ -33,6 +33,14 @@ contextBridge.exposeInMainWorld('mundimonium', {
       ipcRenderer.invoke('mesh:subdivideSector', request),
 
   /**
+   * @param {{ tessellation: string, radius?: number, frequency?: number,
+   *   cameraPosition: [number, number, number] }} request
+   * @returns {Promise<{ items: { kind: string, label?: string, x: number,
+   *   y: number, z: number }[] }>}
+   */
+  getItems: (request) => ipcRenderer.invoke('items:get', request),
+
+  /**
    * @param {(status: { state: 'starting'|'ready'|'crashed'|'exited', detail?: string }) => void} callback
    * @returns {() => void} Unsubscribe function.
    */
