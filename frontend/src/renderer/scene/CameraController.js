@@ -25,6 +25,21 @@ export class OrbitCameraController {
     this._controls.minDistance = 1.5;
     this._controls.maxDistance = 50;
     this._controls.enableDamping = true;
+    // Right-drag orbits; left is deliberately left unbound, reserved for
+    // future click/drag UI interaction (selection, etc.) rather than
+    // camera movement -- this way, right-drag is consistently "move the
+    // camera" across every view (`FlatMapCameraController`'s own pan is
+    // already on the right button by default; `SurfaceCameraController`'s
+    // hand-rolled panning already checks for it explicitly). Panning the
+    // orbit camera itself is disabled entirely, not just left unbound to
+    // a different button: it would let the camera drift away from
+    // orbiting the origin, which nothing here is designed to handle.
+    this._controls.enablePan = false;
+    this._controls.mouseButtons = {
+      LEFT: null,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.ROTATE,
+    };
     this._controls.update();
 
     this._changeDebouncer = new ChangeDebouncer(this._controls);

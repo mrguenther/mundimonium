@@ -2,12 +2,16 @@ import * as THREE from 'three';
 
 import { ChangeDebouncer } from './ChangeDebouncer.js';
 
-// Default/min/max hover height, in the mesh's own real-distance units --
+// Default/min hover height, in the mesh's own real-distance units --
 // tunable placeholders, expected to need empirical adjustment once
 // there's a real scene to look at (matching every other such threshold
 // in this project). Expressed as multiples of a face's own side length,
-// since the mesh's absolute scale is arbitrary.
-const DEFAULT_HOVER_HEIGHT_FACE_WIDTHS = 0.5;
+// since the mesh's absolute scale is arbitrary. The default sits well
+// above `index.js`'s own `FLAT_MODE_THRESHOLD` (2 face-widths) so
+// ordinary 3D exploration doesn't immediately fall into flat mode --
+// mirroring how the orbit camera's own default distance from a sphere
+// sits comfortably above its analogous threshold too.
+const DEFAULT_HOVER_HEIGHT_FACE_WIDTHS = 4.0;
 const MIN_HOVER_HEIGHT_FACE_WIDTHS = 0.1;
 
 // How many pixels of vertical drag correspond to one full vertical field

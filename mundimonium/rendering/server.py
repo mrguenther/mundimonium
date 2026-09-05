@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from mundimonium.coordinates.generic_tessellation import GenericTessellation
 from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshFace
 from mundimonium.coordinates.nesting_iso_grid import SectorItem
@@ -222,6 +223,41 @@ def _resolve_flat_center_and_basis(
   return center, tessellation.tangent_basis_at(center)
 
 
+def _resolve_generic_flat_center_and_orientation(
+    tessellation: GenericTessellation, header: dict,
+) -> tuple[IsometricPoint, np.ndarray | None]:
+  """The mesh point and screen-space orientation a generic `get_flat_
+  mesh`/`get_flat_items` request should center and orient its projection
+  on.
+
+  Always starts from `header['center']` -- the surface-following camera
+  that drives `GenericTessellation`'s flat mode always knows its own
+  exact face-local position directly, unlike `SphericalTessellation`,
+  which needs a real 3D `camera_position` resolved only on its first
+  request (see `_resolve_flat_center_and_basis`). If `header` also
+  carries `pan_offset` (every request after flat mode's first, once that
+  center is already the *previous* response's own resolved value),
+  advances both center and orientation via `GenericTessellation.
+  unflatten_point_and_transport_orientation` -- keeping the projection
+  updating in real time as the view pans (the same real-time re-centering
+  `SphericalTessellation`'s own flat mode already has), while keeping its
+  screen-space orientation continuous rather than snapping to whichever
+  new anchor face's own canonical frame happens to be (see that method's
+  own docstring for why this is an approximation, not exact transport).
+  `header['orientation']`, present whenever `pan_offset` is, is the
+  previous response's own returned orientation to continue from.
+  """
+  center = flat_mesh_export.center_from_json(tessellation, header['center'])
+  if 'pan_offset' in header:
+    pan_x, pan_y = header['pan_offset']
+    orientation = (
+        flat_mesh_export.orientation_from_json(header['orientation'])
+        if 'orientation' in header else None)
+    return tessellation.unflatten_point_and_transport_orientation(
+        center, pan_x, pan_y, orientation)
+  return center, None
+
+
 def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
   """Handles a `get_flat_mesh` request.
 
@@ -236,17 +272,18 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
       see `_resolve_flat_center_and_basis`). May include `auto_subdivide`
       (default `False`).
 
-      For `'generic'`: just `center` (a `{face, b, s}` referring to the
-      fixed demo tessellation, `flat_mesh_export.center_to_json`-encoded)
-      -- no `camera_position`/`pan_offset`/`basis`, since the surface-
-      following camera that drives `GenericTessellation`'s flat mode
-      always knows its own exact face-local position directly, with no
-      "map a 3D position back to a mesh point" resolution step needed
-      (unlike `SphericalTessellation`), and no basis to carry forward
-      (`GenericTessellation.flatten_region` has no tangent-basis concept
-      -- see its own docstring). Every entry is a frozen snapshot; there
-      is no real-time re-centering while panning for this tessellation
-      kind yet (see the plan's Phase 9 "Deferred" section).
+      For `'generic'`: `center` (a `{face, b, s}` referring to the fixed
+      demo tessellation, `flat_mesh_export.center_to_json`-encoded), plus
+      `pan_offset` (and, once available, `orientation`) on every call
+      after flat mode's first (see `_resolve_generic_flat_center_and_
+      orientation`). No `camera_position`/`basis`: the surface-following
+      camera that drives `GenericTessellation`'s flat mode always knows
+      its own exact face-local position directly, with no "map a 3D
+      position back to a mesh point" resolution step needed (unlike
+      `SphericalTessellation`), and no tangent basis of its own (see
+      `GenericTessellation.flatten_region`'s own docstring) -- it carries
+      an `orientation` (a 2x2 rotation) forward instead, for the same
+      screen-space-continuity purpose.
 
   Returns:
     A `(response_header, response_body)` pair -- a `flat_mesh` response,
@@ -254,13 +291,19 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
     positions flattened (via `Tessellation.flatten_region`) around the
     resolved center rather than in true 3D. Also includes `center`
     (`flat_mesh_export.center_to_json`-encoded) for the caller to pass
-    into its own next request, and (`'spherical'` only) `basis`
-    (`basis_to_json`-encoded).
+    into its own next request; (`'spherical'` only) `basis` (`basis_to_
+    json`-encoded) and `center_position` (the resolved center's own true
+    3D position, `[x, y, z]`) -- for the caller to resume the 3D orbit
+    camera at, if it exits flat mode, wherever the view has actually
+    panned to by then; and (`'generic'` only, once resolved via a
+    `pan_offset`) `orientation` (`orientation_to_json`-encoded).
 
   Raises:
     ValueError: If `header["tessellation"]` isn't a supported kind.
   """
   tessellation_kind = header.get('tessellation')
+  center_position = None
+  orientation_out = None
   if tessellation_kind == 'spherical':
     tessellation = _get_lod_tessellation(
         header.get('radius', 1.0), header.get('frequency', 1))
@@ -269,17 +312,21 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
     # 3D position -- reuse `center`'s (exact) 3D position rather than the
     # original (possibly long-stale, once panning has moved on) 3D
     # `camera_position`, since `center` is always the freshest estimate
-    # of where the camera actually is now.
-    camera_position = tessellation.point_to_3d_position(center)
+    # of where the camera actually is now. Also returned to the caller
+    # (see `center_position` below) so it can resume the 3D orbit camera
+    # at wherever flat mode's own view has actually panned to by the time
+    # it exits, rather than the stale pre-entry position.
+    center_position = tessellation.point_to_3d_position(center)
     nearby = flat_mesh_export.nearby_faces(tessellation, center)
     face_indices = [tessellation.faces.index(face) for face in nearby]
     frontier = lod_mesh_export.select_frontier(
-        tessellation, camera_position,
+        tessellation, center_position,
         auto_subdivide=header.get('auto_subdivide', False),
         face_indices=face_indices)
   elif tessellation_kind == 'generic':
     tessellation = _get_generic_demo_tessellation()
-    center = flat_mesh_export.center_from_json(tessellation, header['center'])
+    center, orientation_out = _resolve_generic_flat_center_and_orientation(
+        tessellation, header)
     basis = None
     # No `select_frontier` call needed: the fixed demo mesh has no LOD
     # tree in active use, so each nearby top-level face is its own,
@@ -293,7 +340,7 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
 
   positions, indices, vertex_count, face_count = (
       flat_mesh_export.flatten_frontier_to_buffers(
-          tessellation, center, frontier, basis))
+          tessellation, center, frontier, basis, orientation_out))
 
   response_header = {
       'type': 'flat_mesh',
@@ -307,6 +354,11 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
   }
   if basis is not None:
     response_header['basis'] = flat_mesh_export.basis_to_json(basis)
+  if center_position is not None:
+    response_header['center_position'] = [float(c) for c in center_position]
+  if orientation_out is not None:
+    response_header['orientation'] = (
+        flat_mesh_export.orientation_to_json(orientation_out))
   return response_header, positions + indices
 
 
@@ -365,19 +417,22 @@ def _handle_get_flat_items(header: dict) -> tuple[dict, bytes]:
     same shape as `get_items`'s, but with `x`/`y` flattened (via
     `Tessellation.flatten_region`) around the resolved center, and `z`
     always `0.0`. Also includes `center` (and, `'spherical'` only,
-    `basis`), like `get_flat_mesh`'s response.
+    `basis`; `'generic'` only, once resolved via a `pan_offset`,
+    `orientation`), like `get_flat_mesh`'s response.
 
   Raises:
     ValueError: If `header["tessellation"]` isn't a supported kind.
   """
   tessellation_kind = header.get('tessellation')
+  orientation_out = None
   if tessellation_kind == 'spherical':
     tessellation = _get_lod_tessellation(
         header.get('radius', 1.0), header.get('frequency', 1))
     center, basis = _resolve_flat_center_and_basis(tessellation, header)
   elif tessellation_kind == 'generic':
     tessellation = _get_generic_demo_tessellation()
-    center = flat_mesh_export.center_from_json(tessellation, header['center'])
+    center, orientation_out = _resolve_generic_flat_center_and_orientation(
+        tessellation, header)
     basis = None
   else:
     raise ValueError(f"Unknown tessellation kind: {tessellation_kind!r}")
@@ -386,7 +441,8 @@ def _handle_get_flat_items(header: dict) -> tuple[dict, bytes]:
       {**payload, 'x': x, 'y': y, 'z': 0.0}
       for payload, x, y
       in flat_mesh_export.flatten_visible_items(
-          tessellation, center, header.get('camera_position'), basis)
+          tessellation, center, header.get('camera_position'), basis,
+          orientation_out)
   ]
 
   response_header = {
@@ -395,6 +451,9 @@ def _handle_get_flat_items(header: dict) -> tuple[dict, bytes]:
   }
   if basis is not None:
     response_header['basis'] = flat_mesh_export.basis_to_json(basis)
+  if orientation_out is not None:
+    response_header['orientation'] = (
+        flat_mesh_export.orientation_to_json(orientation_out))
   return response_header, b''
 
 

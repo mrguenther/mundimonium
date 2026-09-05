@@ -55,16 +55,34 @@ contextBridge.exposeInMainWorld('mundimonium', {
    * accumulating relative to the path panned. `cameraPosition` is still
    * required either way (see `getFlatItems`).
    *
+   * For `tessellation: 'generic'`, `orientation` (a 2x2 rotation) plays
+   * the same continuity role `basis` plays for `'spherical'`, just with
+   * no tangent-basis concept of its own -- see `GenericTessellation
+   * .unflatten_point_and_transport_orientation`.
+   *
    * @param {{ tessellation: string, radius?: number, frequency?: number,
-   *   cameraPosition: [number, number, number], autoSubdivide?: boolean,
+   *   cameraPosition?: [number, number, number], autoSubdivide?: boolean,
    *   center?: { face: number, b: number, s: number },
    *   basis?: { e_x: [number, number, number], e_y: [number, number, number] },
-   *   panOffset?: [number, number] }} request
+   *   orientation?: { cos: number, sin: number },
+   *   panOffset?: [number, number] }} request - `cameraPosition` is only
+   *   used (and required) for `tessellation: 'spherical'`'s first call, to
+   *   resolve an initial `center`; `'generic'` always supplies `center`
+   *   directly instead (its surface-following camera already knows its
+   *   own exact position), so `cameraPosition` is never needed there.
    * @returns {Promise<{ positions: Float32Array, indices: Uint32Array,
    *   sectors: object[], center: { face: number, b: number, s: number },
-   *   basis: { e_x: [number, number, number], e_y: [number, number, number] } }>}
-   *   `center`/`basis` are what this response was actually built around --
-   *   pass them back as the next call's own `center`/`basis`.
+   *   basis?: { e_x: [number, number, number], e_y: [number, number, number] },
+   *   centerPosition?: [number, number, number],
+   *   orientation?: { cos: number, sin: number } }>}
+   *   `center`/`basis`/`orientation` are what this response was actually
+   *   built around -- pass them back as the next call's own `center`/
+   *   `basis`/`orientation`. `basis`/`centerPosition` are only present
+   *   for `tessellation: 'spherical'`; `centerPosition` is `center`'s own
+   *   true 3D position, for resuming the 3D orbit camera there if flat
+   *   mode is exited. `orientation` is only present for `tessellation:
+   *   'generic'`, and only once resolved via a `panOffset` (nothing to
+   *   report on the first, `panOffset`-less call).
    */
   getFlatMesh: (request) => ipcRenderer.invoke('mesh:getFlat', request),
 
@@ -89,11 +107,13 @@ contextBridge.exposeInMainWorld('mundimonium', {
    *   cameraPosition: [number, number, number],
    *   center?: { face: number, b: number, s: number },
    *   basis?: { e_x: [number, number, number], e_y: [number, number, number] },
+   *   orientation?: { cos: number, sin: number },
    *   panOffset?: [number, number] }} request
    * @returns {Promise<{ items: { kind: string, label?: string, x: number,
    *   y: number, z: number }[],
    *   center: { face: number, b: number, s: number },
-   *   basis: { e_x: [number, number, number], e_y: [number, number, number] } }>}
+   *   basis: { e_x: [number, number, number], e_y: [number, number, number] },
+   *   orientation?: { cos: number, sin: number } }>}
    */
   getFlatItems: (request) => ipcRenderer.invoke('items:getFlat', request),
 

@@ -781,3 +781,76 @@ def test_flatten_region_raises_for_target_outside_every_anchors_range(
 
   with pytest.raises(ValueError):
     tess.flatten_region(center, [far_target])
+
+
+def test_flatten_region_orientation_rotates_output(relaxable_icosahedron):
+  tess, _, faces = relaxable_icosahedron
+  face = faces[0]
+  center = face.centroid_local_coords
+  targets = [
+      IsometricPoint(face, face.altitude, 0.0),
+      IsometricPoint(face, 0.0, face.altitude),
+  ]
+  identity_results = tess.flatten_region(center, targets)
+
+  angle = math.pi / 3
+  rotation = np.array([
+      [math.cos(angle), -math.sin(angle)],
+      [math.sin(angle), math.cos(angle)],
+  ])
+  rotated_results = tess.flatten_region(center, targets, rotation)
+
+  for (x, y), (rotated_x, rotated_y) in zip(identity_results, rotated_results):
+    expected = rotation @ np.array([x, y])
+    assert (rotated_x, rotated_y) == pytest.approx(tuple(expected))
+
+
+# ---------------------------------------------------------------------------
+# unflatten_point / unflatten_point_and_transport_orientation
+# ---------------------------------------------------------------------------
+
+def test_unflatten_point_round_trips_flatten_region(
+    relaxable_stellated_icosahedron):
+  # Uses the stellated (60-face) fixture rather than the plain
+  # icosahedron: the latter's `RELAXATION_RADIUS` happens to comfortably
+  # cover its entire 20-face mesh (see `test_flatten_region_raises_for_
+  # target_outside_every_anchors_range`'s own comment), so unfolding it
+  # flat from a single anchor is a full closed-surface unwrap that can
+  # genuinely, harmlessly self-overlap far from center -- an unrelated,
+  # pre-existing edge case of that specific small fixture, not something
+  # this test is trying to exercise.
+  tess, _, faces = relaxable_stellated_icosahedron
+  face = faces[0]
+  center = face.centroid_local_coords
+  target = face.face_on_edge(IsometricDirection.S).centroid_local_coords
+
+  (x, y), = tess.flatten_region(center, [target])
+  resolved = tess.unflatten_point(center, x, y)
+
+  assert resolved.grid is target.grid
+  assert resolved.b == pytest.approx(target.b, abs=1e-6)
+  assert resolved.s == pytest.approx(target.s, abs=1e-6)
+
+
+def test_unflatten_point_and_transport_orientation_avoids_spurious_rotation(
+    relaxable_stellated_icosahedron):
+  # This is the regression case for the "panning to a new face snaps the
+  # view to that face's own canonical orientation" bug: recentering on a
+  # neighboring face and then, using the *transported* orientation,
+  # looking back at the original center should land close to the exact
+  # reverse of the original pan -- not rotated by whatever the two
+  # faces' independent canonical frames happen to disagree by.
+  tess, _, faces = relaxable_stellated_icosahedron
+  face = faces[0]
+  neighbor = face.face_on_edge(IsometricDirection.B)
+  old_center = face.centroid_local_coords
+  target = neighbor.centroid_local_coords
+
+  (x, y), = tess.flatten_region(old_center, [target])
+  new_center, new_orientation = tess.unflatten_point_and_transport_orientation(
+      old_center, x, y, orientation=None)
+  assert new_center.grid is neighbor
+
+  (back_x, back_y), = tess.flatten_region(
+      new_center, [old_center], new_orientation)
+  assert (back_x, back_y) == pytest.approx((-x, -y), rel=0.2, abs=1e-6)

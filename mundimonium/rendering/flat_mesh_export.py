@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from mundimonium.coordinates.generic_tessellation import GenericTessellation
 from mundimonium.coordinates.isometric import IsometricDirection, IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshSector
 from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
@@ -175,19 +176,59 @@ def basis_from_json(data: dict) -> tuple[np.ndarray, np.ndarray]:
   )
 
 
+def orientation_to_json(orientation: np.ndarray) -> dict:
+  """A JSON-safe encoding of a `GenericTessellation.flatten_region`
+  orientation (a 2x2 rotation matrix; see its own `orientation`
+  argument), for round-tripping through a response and back into a later
+  request's own `orientation_from_json` call.
+
+  A `{'cos', 'sin'}` pair rather than the full 2x2 matrix, since a
+  rotation matrix's 4 entries are never independent -- this is `basis_
+  to_json`'s spherical counterpart, just shaped around a single angle
+  instead of a 3D vector pair, since a flat 2D rotation has only one
+  degree of freedom to begin with.
+
+  Args:
+    orientation: A 2x2 rotation matrix, e.g. one returned by
+      `GenericTessellation.unflatten_point_and_transport_orientation`.
+
+  Returns:
+    A `{'cos': float, 'sin': float}` dict.
+  """
+  return {'cos': float(orientation[0, 0]), 'sin': float(orientation[1, 0])}
+
+
+def orientation_from_json(data: dict) -> np.ndarray:
+  """Inverse of `orientation_to_json`.
+
+  Args:
+    data: A dict as produced by `orientation_to_json`.
+
+  Returns:
+    The decoded 2x2 rotation matrix.
+  """
+  cos_angle, sin_angle = data['cos'], data['sin']
+  return np.array([[cos_angle, -sin_angle], [sin_angle, cos_angle]])
+
+
 def _flatten_region(
     tessellation: Tessellation,
     center: IsometricPoint,
     targets: list[IsometricPoint],
     basis: tuple[np.ndarray, np.ndarray] | None,
+    orientation: np.ndarray | None = None,
 ) -> list[tuple[float, float]]:
-  """Calls `tessellation.flatten_region`, passing `basis` through only for
-  `SphericalTessellation` -- `GenericTessellation.flatten_region` takes
-  no `basis` parameter at all (it has no tangent-basis concept; see its
-  own docstring), so passing one would raise `TypeError`.
+  """Calls `tessellation.flatten_region`, passing `basis` or `orientation`
+  through only for the tessellation kind that actually accepts it --
+  `SphericalTessellation.flatten_region` takes no `orientation` and
+  `GenericTessellation.flatten_region` takes no `basis` (neither has the
+  other's own concept; see each's own docstring), so passing the wrong
+  one would raise `TypeError`.
   """
   if isinstance(tessellation, SphericalTessellation):
     return tessellation.flatten_region(center, targets, basis)
+  if isinstance(tessellation, GenericTessellation):
+    return tessellation.flatten_region(center, targets, orientation)
   return tessellation.flatten_region(center, targets)
 
 
@@ -196,6 +237,7 @@ def flatten_frontier_to_buffers(
     center: IsometricPoint,
     frontier: list[tuple[LodMeshSector, SectorAddress]],
     basis: tuple[np.ndarray, np.ndarray] | None = None,
+    orientation: np.ndarray | None = None,
 ) -> tuple[bytes, bytes, int, int]:
   """Exports a `select_frontier` result as flat (`z = 0`) renderer-ready
   buffers, centered at `center`.
@@ -213,6 +255,10 @@ def flatten_frontier_to_buffers(
     basis: The tangent basis to project onto -- see `flatten_region`'s
       own `basis` argument. Only meaningful for `SphericalTessellation`;
       ignored (must be omitted or `None`) for any other tessellation.
+    orientation: The orientation to project onto -- see `GenericTessellation
+      .flatten_region`'s own `orientation` argument. Only meaningful for
+      `GenericTessellation`; ignored (must be omitted or `None`) for any
+      other tessellation.
 
   Returns:
     A `(positions_bytes, indices_bytes, vertex_count, face_count)` tuple,
@@ -235,7 +281,8 @@ def flatten_frontier_to_buffers(
         sector.project_onto_root_grid(corner) for corner in local_corners)
     indices.append((base_index, base_index + 1, base_index + 2))
 
-  flat_positions = _flatten_region(tessellation, center, targets, basis)
+  flat_positions = _flatten_region(
+      tessellation, center, targets, basis, orientation)
   positions_array = np.array(
       [(x, y, 0.0) for x, y in flat_positions], dtype=np.float32)
   indices_array = np.array(indices, dtype=np.uint32)
@@ -249,6 +296,7 @@ def flatten_visible_items(
     center: IsometricPoint,
     camera_position: Sequence[float] | None,
     basis: tuple[np.ndarray, np.ndarray] | None = None,
+    orientation: np.ndarray | None = None,
 ) -> list[tuple[Any, float, float]]:
   """Like `item_export.iter_visible_items`, but positions are flattened
   (via `flatten_region`) around `center` instead of in true 3D.
@@ -264,6 +312,10 @@ def flatten_visible_items(
     basis: The tangent basis to project onto -- see `flatten_region`'s
       own `basis` argument. Only meaningful for `SphericalTessellation`;
       ignored (must be omitted or `None`) for any other tessellation.
+    orientation: The orientation to project onto -- see `GenericTessellation
+      .flatten_region`'s own `orientation` argument. Only meaningful for
+      `GenericTessellation`; ignored (must be omitted or `None`) for any
+      other tessellation.
 
   Returns:
     A `(payload, x, y)` tuple per currently-visible item.
@@ -280,7 +332,8 @@ def flatten_visible_items(
   if not points:
     return []
 
-  flat_positions = _flatten_region(tessellation, center, points, basis)
+  flat_positions = _flatten_region(
+      tessellation, center, points, basis, orientation)
   return [
       (payload, x, y)
       for payload, (x, y) in zip(payloads, flat_positions)

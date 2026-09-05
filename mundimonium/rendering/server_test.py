@@ -337,3 +337,156 @@ def test_get_flat_items_with_pan_offset_uses_the_recentered_point():
           tessellation.point_to_3d_position(expected_center))
   assert actual_basis[0] == pytest.approx(expected_basis[0])
   assert actual_basis[1] == pytest.approx(expected_basis[1])
+
+
+def _generic_demo_center():
+  """The generic demo tessellation, plus a `center_to_json`-encoded point
+  at face 0's own centroid, for tests that need a starting `center`
+  request field (generic flat mode has no `camera_position` fallback --
+  see `_resolve_generic_flat_center`).
+  """
+  tessellation = server._get_generic_demo_tessellation()
+  center_point = IsometricPoint.center(tessellation.faces[0])
+  return tessellation, flat_mesh_export.center_to_json(
+      tessellation, center_point)
+
+
+def test_get_flat_mesh_returns_a_valid_response_for_generic_with_zero_z():
+  _tessellation, center = _generic_demo_center()
+  header = {
+      'type': 'get_flat_mesh', 'id': '11d', 'tessellation': 'generic',
+      'center': center,
+  }
+  response_header, response_body = dispatch(header, b'')
+  assert response_header['type'] == 'flat_mesh'
+  assert response_header['id'] == '11d'
+  assert response_header['face_count'] == len(response_header['sectors'])
+  assert len(response_body) == (
+      response_header['positions_byte_length']
+      + response_header['indices_byte_length'])
+
+  positions = np.frombuffer(
+      response_body[:response_header['positions_byte_length']],
+      dtype=np.float32).reshape(-1, 3)
+  assert np.all(positions[:, 2] == 0.0)
+  assert {'face', 'b', 's'} <= response_header['center'].keys()
+  assert 'basis' not in response_header
+
+
+def test_get_flat_mesh_with_pan_offset_recenters_via_unflatten_point_for_generic():
+  tessellation, center = _generic_demo_center()
+  entry_header = {
+      'type': 'get_flat_mesh', 'id': '11e', 'tessellation': 'generic',
+      'center': center,
+  }
+  entry_response, _ = dispatch(entry_header, b'')
+  first_center = entry_response['center']
+
+  pan_offset = [0.3, -0.2]
+  panned_header = {
+      'type': 'get_flat_mesh', 'id': '11f', 'tessellation': 'generic',
+      'center': first_center, 'pan_offset': pan_offset,
+  }
+  panned_response, _ = dispatch(panned_header, b'')
+
+  # Independently compute the expected new center the same way the server
+  # should have, and confirm the response's own resolved value matches.
+  reference_point = flat_mesh_export.center_from_json(
+      tessellation, first_center)
+  expected_center = tessellation.unflatten_point(reference_point, *pan_offset)
+  actual_center = flat_mesh_export.center_from_json(
+      tessellation, panned_response['center'])
+  assert actual_center.grid is expected_center.grid
+  assert actual_center.b == pytest.approx(expected_center.b)
+  assert actual_center.s == pytest.approx(expected_center.s)
+
+
+def test_get_flat_mesh_with_pan_offset_transports_orientation_for_generic():
+  tessellation, center = _generic_demo_center()
+  entry_header = {
+      'type': 'get_flat_mesh', 'id': '11g', 'tessellation': 'generic',
+      'center': center,
+  }
+  entry_response, _ = dispatch(entry_header, b'')
+  assert 'orientation' not in entry_response  # nothing to transport yet
+
+  pan_offset = [0.3, -0.2]
+  panned_header = {
+      'type': 'get_flat_mesh', 'id': '11h', 'tessellation': 'generic',
+      'center': entry_response['center'], 'pan_offset': pan_offset,
+  }
+  panned_response, _ = dispatch(panned_header, b'')
+
+  reference_point = flat_mesh_export.center_from_json(
+      tessellation, entry_response['center'])
+  _expected_center, expected_orientation = (
+      tessellation.unflatten_point_and_transport_orientation(
+          reference_point, *pan_offset, orientation=None))
+  actual_orientation = flat_mesh_export.orientation_from_json(
+      panned_response['orientation'])
+  assert actual_orientation == pytest.approx(expected_orientation)
+
+  # A third call, carrying the second response's own orientation forward,
+  # should continue from it rather than silently resetting to identity.
+  second_pan_offset = [-0.1, 0.15]
+  second_panned_header = {
+      'type': 'get_flat_mesh', 'id': '11i', 'tessellation': 'generic',
+      'center': panned_response['center'], 'pan_offset': second_pan_offset,
+      'orientation': panned_response['orientation'],
+  }
+  second_panned_response, _ = dispatch(second_panned_header, b'')
+
+  second_reference_point = flat_mesh_export.center_from_json(
+      tessellation, panned_response['center'])
+  _expected_second_center, expected_second_orientation = (
+      tessellation.unflatten_point_and_transport_orientation(
+          second_reference_point, *second_pan_offset,
+          orientation=expected_orientation))
+  actual_second_orientation = flat_mesh_export.orientation_from_json(
+      second_panned_response['orientation'])
+  assert actual_second_orientation == pytest.approx(
+      expected_second_orientation)
+
+
+def test_get_flat_items_returns_seeded_generic_demo_items_with_zero_z():
+  _tessellation, center = _generic_demo_center()
+  header = {
+      'type': 'get_flat_items', 'id': '12d', 'tessellation': 'generic',
+      'center': center,
+  }
+  response_header, response_body = dispatch(header, b'')
+  assert response_header['type'] == 'items'
+  assert response_header['id'] == '12d'
+  assert response_body == b''
+
+  labels = {item['label'] for item in response_header['items']}
+  assert 'Anchorhold' in labels  # seeded at face 0, this request's own center
+  for item in response_header['items']:
+    assert item['z'] == 0.0
+  assert {'face', 'b', 's'} <= response_header['center'].keys()
+  assert 'basis' not in response_header
+
+
+def test_get_flat_items_with_pan_offset_uses_the_recentered_point_for_generic():
+  tessellation, center = _generic_demo_center()
+  entry_header = {
+      'type': 'get_flat_items', 'id': '12e', 'tessellation': 'generic',
+      'center': center,
+  }
+  entry_response, _ = dispatch(entry_header, b'')
+
+  pan_offset = [0.2, 0.1]
+  panned_header = {
+      'type': 'get_flat_items', 'id': '12f', 'tessellation': 'generic',
+      'center': entry_response['center'], 'pan_offset': pan_offset,
+  }
+  panned_response, _ = dispatch(panned_header, b'')
+
+  reference_point = flat_mesh_export.center_from_json(
+      tessellation, entry_response['center'])
+  expected_center = tessellation.unflatten_point(reference_point, *pan_offset)
+  actual_center = flat_mesh_export.center_from_json(
+      tessellation, panned_response['center'])
+  assert actual_center.grid is expected_center.grid
+  assert actual_center.b == pytest.approx(expected_center.b)
+  assert actual_center.s == pytest.approx(expected_center.s)

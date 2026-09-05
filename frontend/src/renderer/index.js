@@ -35,6 +35,18 @@ const SIDE_LENGTH = (() => {
 // server actually renders once in flat mode).
 const FLAT_MODE_THRESHOLD = 2.0;
 
+// The surface-following camera reuses this same threshold, against its
+// own hover height rather than altitude above a sphere's center: both
+// cameras share the same vertical FOV and the same face-side-length
+// normalization, so the same multiple-of-side-length distance produces
+// the same visible-face-width framing at the transition regardless of
+// which camera it's measured on -- there's no reason for the two to
+// differ. `SurfaceCameraController`'s own `DEFAULT_HOVER_HEIGHT_FACE_
+// WIDTHS` is set comfortably above this threshold (mirroring how the
+// orbit camera's own default distance sits comfortably above it too),
+// so ordinary 3D exploration at the default height isn't immediately
+// swallowed into flat mode.
+
 // Debug-only stand-in for a real click-to-subdivide UI (not built this
 // phase -- growing LOD detail defaults to off, since it's expected to
 // eventually trigger procedural generation). Press 'g' to subdivide the
@@ -128,14 +140,21 @@ async function main() {
   // and there's exactly one demo shape to build it from.
   let surfaceController = null;
 
-  // The generic demo's own flat-mode center (`{face, b, s}`), remembered
-  // only so `switchToGenericOrbitMode` can resume the surface camera at
-  // the same physical location on exit -- unlike `flatCenter` below,
-  // this is never sent back into a later request, since
-  // `GenericTessellation`'s flat mode has no real-time re-centering to
-  // carry a reference frame forward for (see the plan's own "Deferred"
-  // note): panning here just slides the same frozen snapshot around.
+  // The generic demo's own resolved flat-mode center (`{face, b, s}`) --
+  // `null` until the first `getFlatMesh`/`getFlatItems` response arrives
+  // after entering flat mode. Serves the same two purposes `flatCenter`
+  // does below: every further refresh re-centers on it (offset by
+  // however far `flatController`'s camera has panned since, resolved
+  // server-side via `GenericTessellation
+  // .unflatten_point_and_transport_orientation`), and `switchToGeneric
+  // OrbitMode` resumes the surface camera exactly here on exit --
+  // wherever the view has actually panned to, not the pre-entry
+  // position. `genericFlatOrientation` is carried forward the same way
+  // so the server can keep the projection's screen-space orientation
+  // continuous across re-centers (see that method's own docstring) --
+  // `null` until resolved via a pan, same as `genericFlatCenter`.
   let genericFlatCenter = null;
+  let genericFlatOrientation = null;
 
   // Non-null exactly while the flat map is the active mode. Its camera is
   // rebuilt fresh each time flat mode is entered. `flatModeCameraPosition`
@@ -157,8 +176,13 @@ async function main() {
   // .unflatten_point_and_transport_basis`) rather than independently
   // recomputing an orientation at each new center, which would otherwise
   // slowly rotate the view relative to the path actually panned.
+  // `flatCenterPosition` is `flatCenter`'s own true 3D position (from
+  // `getFlatMesh`'s own `center_position`), used by `switchToOrbitMode`
+  // to resume the 3D camera wherever flat mode has actually panned to,
+  // rather than its stale pre-entry position.
   let flatCenter = null;
   let flatBasis = null;
+  let flatCenterPosition = null;
 
   // `switchToFlatMode` awaits a round-trip before `orbitController` is
   // disabled, so a second drag/zoom in that gap could otherwise trigger a
@@ -215,6 +239,7 @@ async function main() {
     lastSectors = meshData.sectors;
     flatCenter = meshData.center;
     flatBasis = meshData.basis;
+    flatCenterPosition = meshData.centerPosition;
     updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
     flatController.recenter();
     return meshData;
@@ -244,6 +269,7 @@ async function main() {
       // Fresh entry -- derive center/basis from 3D, not a stale prior visit's.
       flatCenter = null;
       flatBasis = null;
+      flatCenterPosition = null;
       const halfHeight = Math.max(
           altitudeAboveSurface(flatModeCameraPosition), 0.01);
 
@@ -275,18 +301,22 @@ async function main() {
 
   function switchToOrbitMode() {
     // `orbitController.camera` hasn't moved since flat mode was entered
-    // (it was disabled, not driven, the whole time) -- it's still sitting
-    // right at the threshold that triggered the switch in the first
-    // place. Without repositioning it here, the very next `onChange` tick
-    // would see that same too-close position and immediately switch back
-    // into flat mode. Push it out along its existing look direction to
-    // match how far the user actually zoomed out while in flat mode --
-    // the flat camera's own current zoom already encodes that distance
-    // exactly, via the same `visibleHalfHeight`-as-altitude convention
-    // `switchToFlatMode` used to set it up to begin with.
+    // (it was disabled, not driven, the whole time), so it can't just be
+    // left where it is -- resume along the direction to `flatCenter`'s
+    // own true 3D position (`flatCenterPosition`, from the most recent
+    // `getFlatMesh` response) instead of the camera's own stale pre-
+    // entry position, so exiting respects wherever flat mode has
+    // actually panned to since, not just where 3D mode was left off.
+    // Pushed out to match how far the user actually zoomed out while in
+    // flat mode -- the flat camera's own current zoom already encodes
+    // that distance exactly, via the same `visibleHalfHeight`-as-
+    // altitude convention `switchToFlatMode` used to set it up to begin
+    // with -- which also keeps this comfortably past the threshold that
+    // triggered the switch, so the very next `onChange` tick doesn't
+    // immediately trigger it again.
     const visibleHalfHeight =
         flatController.camera.top / flatController.camera.zoom;
-    const direction = orbitController.camera.position.clone().normalize();
+    const direction = new THREE.Vector3(...flatCenterPosition).normalize();
     orbitController.camera.position.copy(
         direction.multiplyScalar(TESSELLATION.radius + visibleHalfHeight));
     orbitController.camera.lookAt(0, 0, 0);
@@ -296,6 +326,7 @@ async function main() {
     flatModeCameraPosition = null;
     flatCenter = null;
     flatBasis = null;
+    flatCenterPosition = null;
     orbitController.setEnabled(true);
     sceneManager.setActiveController(orbitController);
     refreshLodMesh().catch((error) => {
@@ -317,18 +348,48 @@ async function main() {
     }
   }
 
+  /**
+   * The request fields that tell the server to re-center (and re-
+   * orient) exactly on wherever the generic flat view currently is --
+   * `genericFlatCenter`/`genericFlatOrientation` (the previous
+   * response's own resolved values) plus how far the camera has panned
+   * from it since, for the server to resolve via `GenericTessellation
+   * .unflatten_point_and_transport_orientation` (see `server.py`'s own
+   * `_resolve_generic_flat_center_and_orientation`). Mirrors the
+   * spherical flat mode's own `flatRecenterRequestFields`, simplified
+   * since generic flat mode has no "first call" case needing a
+   * different fallback: `switchToGenericFlatMode` always sets
+   * `genericFlatCenter` from the surface camera's own exact position
+   * before the first request.
+   */
+  function genericFlatRecenterRequestFields() {
+    return {
+      center: genericFlatCenter,
+      orientation: genericFlatOrientation,
+      panOffset: [
+        flatController.camera.position.x, flatController.camera.position.y,
+      ],
+    };
+  }
+
   async function refreshGenericFlatMesh() {
     const meshData = await window.mundimonium.getFlatMesh({
-      ...GENERIC_TESSELLATION, center: genericFlatCenter,
+      ...GENERIC_TESSELLATION, ...genericFlatRecenterRequestFields(),
     });
+    genericFlatCenter = meshData.center;
+    genericFlatOrientation = meshData.orientation;
     updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
+    flatController.recenter();
     return meshData;
   }
 
   async function refreshGenericFlatItems() {
-    const { items } = await window.mundimonium.getFlatItems({
-      ...GENERIC_TESSELLATION, center: genericFlatCenter,
-    });
+    const { items, center, orientation } =
+        await window.mundimonium.getFlatItems({
+          ...GENERIC_TESSELLATION, ...genericFlatRecenterRequestFields(),
+        });
+    genericFlatCenter = center;
+    genericFlatOrientation = orientation;
     itemGroup.clear();
     for (const sprite of buildItemSprites(items)) {
       itemGroup.add(sprite);
@@ -342,6 +403,7 @@ async function main() {
     switchingModes = true;
     try {
       genericFlatCenter = surfaceController.getFlatModeCenter();
+      genericFlatOrientation = null; // fresh entry -- nothing to continue yet
       const halfHeight = Math.max(surfaceController.hoverHeight, 0.01);
 
       surfaceController.setEnabled(false);
@@ -351,28 +413,29 @@ async function main() {
       sceneManager.setActiveController(flatController);
 
       flatController.onChange(() => {
-        // Inverted relative to the spherical flat mode's own exit check
-        // (`visibleHalfHeight > threshold`) on purpose: the surface
-        // camera enters flat mode by zooming *out* (`h` growing past the
-        // threshold), the opposite direction from the sphere's own
-        // altitude-shrinking entry. Reusing spherical's `>` check
-        // verbatim here would already be satisfied the instant flat mode
-        // is entered (we just crossed that same threshold from below),
-        // bouncing straight back to 3D -- using `<` instead means you
-        // exit by zooming back *in* past the threshold, mirroring how
-        // you got here in the first place.
+        // Same shape as the spherical flat mode's own exit check
+        // (`visibleHalfHeight > threshold`): entry and exit cross the
+        // threshold in opposite directions (entry by zooming in, `h`
+        // shrinking below it; exit by zooming back out, growing past it
+        // again), so the check that just triggered entry is never still
+        // satisfied the instant flat mode starts -- no immediate bounce.
         const visibleHalfHeight =
             flatController.camera.top / flatController.camera.zoom;
         if (visibleHalfHeight
-            < FLAT_MODE_THRESHOLD * surfaceController.currentFaceSideLength) {
+            > FLAT_MODE_THRESHOLD * surfaceController.currentFaceSideLength) {
           switchToGenericOrbitMode().catch((error) => {
             setStatus(`Failed to switch to 3D: ${error.message}`);
           });
+          return;
         }
-        // No re-fetch on pan, unlike the spherical flat mode's own
-        // `onChange`: `GenericTessellation` has no real-time re-centering
-        // support yet (see the plan's own "Deferred" note), so this stays
-        // a frozen snapshot until the view either exits or re-enters.
+        // Re-centers the projection on wherever the view now is, exactly
+        // (see `genericFlatRecenterRequestFields`) -- without this,
+        // panning would just slide a frozen snapshot around instead of
+        // updating it in real time.
+        Promise.all([refreshGenericFlatMesh(), refreshGenericFlatItems()])
+            .catch((error) => {
+              setStatus(`Failed to update flat view: ${error.message}`);
+            });
       });
     } finally {
       switchingModes = false;
@@ -392,6 +455,7 @@ async function main() {
     flatController.dispose();
     flatController = null;
     genericFlatCenter = null;
+    genericFlatOrientation = null;
     surfaceController.setEnabled(true);
     sceneManager.setActiveController(surfaceController);
 
@@ -503,7 +567,7 @@ async function main() {
         surfaceController.onChange(() => {
           const h = surfaceController.hoverHeight;
           const sideLength = surfaceController.currentFaceSideLength;
-          if (h > FLAT_MODE_THRESHOLD * sideLength) {
+          if (h < FLAT_MODE_THRESHOLD * sideLength) {
             switchToGenericFlatMode().catch((error) => {
               setStatus(`Failed to switch to flat mode: ${error.message}`);
             });

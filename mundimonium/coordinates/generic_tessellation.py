@@ -866,6 +866,7 @@ class GenericTessellation(Tessellation):
   @override
   def flatten_region(
       self, center: IsometricPoint, targets: Sequence[IsometricPoint],
+      orientation: np.ndarray | None = None,
   ) -> list[tuple[float, float]]:
     """Maps `targets` into a locally flat 2D coordinate system, built
     from `center`'s own face's precomputed `flattened_positions` -- and,
@@ -901,6 +902,18 @@ class GenericTessellation(Tessellation):
     Args:
       center: The point the flattened region is centered on.
       targets: The points to flatten, in any order.
+      orientation: An optional 2x2 rotation matrix, applied to every
+        blended position before reading targets off them, e.g. one
+        returned by `unflatten_point_and_transport_orientation` -- for a
+        caller re-centering on a moving point across many calls that
+        wants the projection's own screen-space orientation to evolve
+        continuously, rather than each call independently defaulting to
+        whichever arbitrary orientation `center.grid`'s own canonical
+        local frame happens to have (which can differ face to face, so
+        panning across a face boundary would otherwise visibly "spin"
+        the whole view). Defaults to no rotation when omitted -- this
+        method's previous, orientation-agnostic behavior, still exactly
+        valid for a single, one-off call.
 
     Returns:
       One `(x, y)` pair per point in `targets`, in the same order.
@@ -921,6 +934,11 @@ class GenericTessellation(Tessellation):
       return []
 
     blended = self._blended_positions_at(face, center)
+    if orientation is not None:
+      blended = {
+          vertex: orientation @ position
+          for vertex, position in blended.items()
+      }
     return [self._resolve_target(target, blended) for target in targets]
 
   @staticmethod
@@ -1001,6 +1019,174 @@ class GenericTessellation(Tessellation):
     wb, ws, wd = target.barycentric
     position = wb * pos_b + ws * pos_s + wd * pos_d
     return (float(position[0]), float(position[1]))
+
+  def unflatten_point(
+      self, center: IsometricPoint, x: Number, y: Number,
+  ) -> IsometricPoint:
+    """The mesh point `flatten_region(center, [that point])` would map to
+    `(x, y)` -- the inverse of `flatten_region`, for real-time re-
+    centering while panning a flat-mode view (see `server.py`'s own
+    `get_flat_mesh`/`get_flat_items` handlers).
+
+    A thin wrapper around `unflatten_point_and_transport_orientation`
+    with no orientation to preserve -- see that method for how the
+    inversion itself works.
+
+    Raises:
+      TypeError: If `self.face_type` isn't a `RelaxableFace` subclass.
+    """
+    new_center, _orientation = self.unflatten_point_and_transport_orientation(
+        center, x, y, orientation=None)
+    return new_center
+
+  def unflatten_point_and_transport_orientation(
+      self, center: IsometricPoint, x: Number, y: Number,
+      orientation: np.ndarray | None,
+  ) -> tuple[IsometricPoint, np.ndarray]:
+    """Like `unflatten_point`, but also returns the orientation to pass
+    into the *next* `flatten_region`/`unflatten_point_and_transport_
+    orientation` call so the projection's screen-space orientation keeps
+    evolving continuously as `(x, y)` -- e.g. a panned-to view center --
+    moves across faces, rather than snapping to whichever arbitrary
+    canonical orientation each new anchor face happens to have.
+
+    Unlike `SphericalTessellation.unflatten_point_and_transport_basis`
+    (exact parallel transport along a geodesic, available because the
+    sphere is a constant-curvature manifold), `GenericTessellation` has
+    no such closed form: an irregular mesh's total angle defect between
+    `center` and the resolved point is path-dependent, so there is no
+    single "correct" transported orientation to solve for exactly.
+    Instead, this uses a practical approximation: it compares the
+    resolved face's own vertex_b->vertex_s edge as it appears under the
+    *old* orientation (already computed while locating `(x, y)`, so this
+    costs nothing extra) against the same edge freshly flattened around
+    the *new* center with no orientation applied, and returns the
+    rotation that aligns the second to the first. Composing this into
+    the next call cancels out exactly the "spin" that new center's own
+    default canonical frame would otherwise introduce, keeping the view
+    visually stable across a single re-center step; it is not exact
+    parallel transport, but the two agree closely for the small,
+    debounced steps real panning takes, and there is no path-independent
+    ground truth to diverge from in any case.
+
+    Args:
+      center: The point flat-mode panning was last centered on.
+      x: The panned-to view center's flattened x coordinate, relative to
+        `center`.
+      y: Same, for y.
+      orientation: The orientation `center` was itself flattened under
+        (i.e. the previous call's own returned orientation), or `None`
+        for `flatten_region`'s own default (no rotation) -- as when
+        first entering flat mode, with no prior orientation to preserve.
+
+    Returns:
+      A `(new_center, new_orientation)` pair: `new_center` is the same
+      point `unflatten_point` would return; `new_orientation` is the
+      orientation to pass as `flatten_region`'s own `orientation`
+      argument (or back into this method) on the next call.
+
+    Raises:
+      TypeError: If `self.face_type` isn't a `RelaxableFace` subclass.
+    """
+    face = center.grid
+    if not isinstance(face, RelaxableFace):
+      raise TypeError(
+          "GenericTessellation.unflatten_point_and_transport_orientation: "
+          "requires self.face_type to be a RelaxableFace subclass, got "
+          f"{type(face).__name__}.")
+
+    nearby = list(face.nearby_faces)
+    targets: list[IsometricPoint] = []
+    triangle_ranges: list[tuple[int, int]] = []
+    for nearby_face in nearby:
+      altitude = nearby_face.altitude
+      start = len(targets)
+      targets.append(IsometricPoint(nearby_face, altitude, 0.0))
+      targets.append(IsometricPoint(nearby_face, 0.0, altitude))
+      targets.append(IsometricPoint(nearby_face, 0.0, 0.0))
+      triangle_ranges.append((start, start + 3))
+
+    flat_positions = self.flatten_region(center, targets, orientation)
+    point = np.array([x, y], dtype=np.float64)
+
+    matched_face = None
+    matched_barycentric = None
+    matched_triangle = None
+    closest_face = None
+    closest_barycentric = None
+    closest_triangle = None
+    closest_distance = math.inf
+    for nearby_face, (start, end) in zip(nearby, triangle_ranges):
+      triangle = np.array(flat_positions[start:end])
+      barycentric = self._local_2d_to_barycentric_in_frame(point, triangle)
+      if all(weight >= -1e-9 for weight in barycentric):
+        matched_face = nearby_face
+        matched_barycentric = barycentric
+        matched_triangle = triangle
+        break
+      distance = float(np.linalg.norm(point - triangle.mean(axis=0)))
+      if distance < closest_distance:
+        closest_distance = distance
+        closest_face = nearby_face
+        closest_barycentric = barycentric
+        closest_triangle = triangle
+
+    if matched_face is None:
+      # `(x, y)` fell outside every nearby face's flattened triangle --
+      # only possible if the caller panned far enough, in one step, to
+      # leave the neighborhood `flatten_region` actually covers from
+      # `center` (not expected for the small, debounced steps real
+      # panning takes). Fall back to the closest flattened centroid,
+      # clamping its (out-of-range) barycentric weights back into
+      # [0, 1] -- an approximate, bounded-error resolution rather than a
+      # hard failure.
+      weight_b, weight_s, weight_d = (
+          max(weight, 0.0) for weight in closest_barycentric)
+      total_weight = weight_b + weight_s + weight_d
+      weight_b /= total_weight
+      weight_s /= total_weight
+      matched_face = closest_face
+      matched_triangle = closest_triangle
+    else:
+      weight_b, weight_s, _weight_d = matched_barycentric
+
+    new_center = IsometricPoint(
+        matched_face, weight_b * matched_face.altitude,
+        weight_s * matched_face.altitude)
+    new_orientation = self._transport_orientation(
+        new_center, matched_face, matched_triangle)
+    return new_center, new_orientation
+
+  def _transport_orientation(
+      self, new_center: IsometricPoint, matched_face: RelaxableFace,
+      old_oriented_triangle: np.ndarray,
+  ) -> np.ndarray:
+    """The orientation to carry into the next `flatten_region` call so
+    its screen-space frame continues smoothly from `new_center`, rather
+    than snapping to `matched_face`'s own default canonical orientation.
+
+    See `unflatten_point_and_transport_orientation`'s own docstring for
+    why this is an approximation, not exact parallel transport.
+
+    Args:
+      new_center: The point just resolved by `unflatten_point_and_
+        transport_orientation`.
+      matched_face: `new_center`'s own face.
+      old_oriented_triangle: `matched_face`'s (vertex_b, vertex_s,
+        vertex_d) flattened positions under the *old* orientation,
+        already computed by the caller while locating `new_center`.
+    """
+    vertex_b_point = IsometricPoint(matched_face, matched_face.altitude, 0.0)
+    vertex_s_point = IsometricPoint(matched_face, 0.0, matched_face.altitude)
+    fresh_b, fresh_s = self.flatten_region(
+        new_center, [vertex_b_point, vertex_s_point])
+    fresh_edge = np.array(fresh_s) - np.array(fresh_b)
+    old_edge = old_oriented_triangle[1] - old_oriented_triangle[0]
+    angle = (
+        math.atan2(old_edge[1], old_edge[0])
+        - math.atan2(fresh_edge[1], fresh_edge[0]))
+    cos_angle, sin_angle = math.cos(angle), math.sin(angle)
+    return np.array([[cos_angle, -sin_angle], [sin_angle, cos_angle]])
 
   @override
   def on_vertex_added(self, vertex: TessellationVertex) -> None:
