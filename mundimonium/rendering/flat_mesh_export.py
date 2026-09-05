@@ -36,6 +36,47 @@ def center_point_from_camera(
   return tessellation.new_point_at_coords(colatitude, longitude)
 
 
+def center_to_json(
+    tessellation: SphericalTessellation, point: IsometricPoint) -> dict:
+  """A JSON-safe encoding of `point`, for round-tripping a flat-mode
+  center through a response and back into a later request's own
+  `center_from_json` call.
+
+  `point.grid` must be one of `tessellation`'s own top-level faces (true
+  of anything `new_point_at_coords`/`unflatten_point` return -- neither
+  ever resolves onto a nested LOD sub-sector) -- this doesn't handle a
+  nested `SectorAddress`-style path, unlike `lod_mesh_export.py`'s own
+  address scheme, since it doesn't need to.
+
+  Args:
+    tessellation: The tessellation `point` belongs to.
+    point: The center to encode.
+
+  Returns:
+    A `{'face': int, 'b': float, 's': float}` dict.
+  """
+  return {
+      'face': tessellation.faces.index(point.grid),
+      'b': point.b,
+      's': point.s,
+  }
+
+
+def center_from_json(
+    tessellation: SphericalTessellation, data: dict) -> IsometricPoint:
+  """Inverse of `center_to_json`.
+
+  Args:
+    tessellation: The tessellation `data['face']` indexes into.
+    data: A dict as produced by `center_to_json`.
+
+  Returns:
+    The decoded center point.
+  """
+  face = tessellation.faces[data['face']]
+  return IsometricPoint(face, data['b'], data['s'])
+
+
 def flatten_frontier_to_buffers(
     tessellation: SphericalTessellation,
     center: IsometricPoint,

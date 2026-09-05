@@ -189,20 +189,47 @@ def _handle_subdivide_sector(header: dict) -> tuple[dict, bytes]:
   return {'type': 'subdivide_sector_ack', 'id': header.get('id')}, b''
 
 
+def _resolve_flat_center(
+    tessellation: SphericalTessellation, header: dict,
+) -> IsometricPoint:
+  """The mesh point a `get_flat_mesh`/`get_flat_items` request should
+  center its projection on.
+
+  If `header` carries `center`/`pan_offset` (every request after flat
+  mode's first, once a reference center is already known), resolves the
+  new center exactly via `SphericalTessellation.unflatten_point`, the
+  inverse of `flatten_region`. Otherwise (flat mode's initial entry, when
+  only a real 3D `camera_position` exists yet) falls back to
+  `flat_mesh_export.center_point_from_camera`.
+  """
+  if 'center' in header:
+    reference_point = flat_mesh_export.center_from_json(
+        tessellation, header['center'])
+    pan_x, pan_y = header['pan_offset']
+    return tessellation.unflatten_point(reference_point, pan_x, pan_y)
+  return flat_mesh_export.center_point_from_camera(
+      tessellation, header['camera_position'])
+
+
 def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
   """Handles a `get_flat_mesh` request.
 
   Args:
     header: The request header. Must include `tessellation` (currently
       only `'spherical'` is supported), that tessellation type's own
-      construction parameters (`radius`, `frequency`), and
-      `camera_position`. May include `auto_subdivide` (default `False`).
+      construction parameters (`radius`, `frequency`), and either
+      `camera_position` (flat mode's initial entry) or `center` +
+      `pan_offset` (every subsequent call, once a reference center is
+      already known -- see `_resolve_flat_center`). May include
+      `auto_subdivide` (default `False`).
 
   Returns:
     A `(response_header, response_body)` pair -- a `flat_mesh` response,
     the same shape as `get_lod_mesh`'s `lod_mesh` response, but with
     positions flattened (via `Tessellation.flatten_region`) around the
-    mesh point the camera is currently over, rather than in true 3D.
+    resolved center rather than in true 3D. Also includes `center` (the
+    resolved center, `flat_mesh_export.center_to_json`-encoded) for the
+    caller to pass into its own next request.
 
   Raises:
     ValueError: If `header["tessellation"]` isn't a supported kind.
@@ -213,9 +240,13 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
 
   tessellation = _get_lod_tessellation(
       header.get('radius', 1.0), header.get('frequency', 1))
-  camera_position = header['camera_position']
-  center = flat_mesh_export.center_point_from_camera(
-      tessellation, camera_position)
+  center = _resolve_flat_center(tessellation, header)
+  # `select_frontier`'s own distance-to-camera check still wants a real
+  # 3D position -- reuse `center`'s (exact) 3D position rather than the
+  # original (possibly long-stale, once panning has moved on) 3D
+  # `camera_position`, since `center` is always the freshest estimate of
+  # where the camera actually is now.
+  camera_position = tessellation.point_to_3d_position(center)
   frontier = lod_mesh_export.select_frontier(
       tessellation, camera_position,
       auto_subdivide=header.get('auto_subdivide', False))
@@ -231,6 +262,7 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
       'positions_byte_length': len(positions),
       'indices_byte_length': len(indices),
       'sectors': [address.to_json() for _sector, address in frontier],
+      'center': flat_mesh_export.center_to_json(tessellation, center),
   }
   return response_header, positions + indices
 
@@ -277,13 +309,19 @@ def _handle_get_flat_items(header: dict) -> tuple[dict, bytes]:
     header: The request header. Must include `tessellation` (currently
       only `'spherical'` is supported), that tessellation type's own
       construction parameters (`radius`, `frequency`), and
-      `camera_position`.
+      `camera_position` -- always required here (unlike `get_flat_mesh`),
+      since `flatten_visible_items` still uses it for item-visibility
+      `scale` even once `center`/`pan_offset` are also present and doing
+      the actual positioning (see `_resolve_flat_center`). Not yet
+      updated to track flat-mode zoom instead, so this scale grows
+      increasingly stale the further the view pans from where flat mode
+      was originally entered.
 
   Returns:
     A `(response_header, response_body)` pair -- an `items` response, the
     same shape as `get_items`'s, but with `x`/`y` flattened (via
-    `Tessellation.flatten_region`) around the mesh point the camera is
-    currently over, and `z` always `0.0`.
+    `Tessellation.flatten_region`) around the resolved center, and `z`
+    always `0.0`. Also includes `center`, like `get_flat_mesh`'s response.
 
   Raises:
     ValueError: If `header["tessellation"]` isn't a supported kind.
@@ -294,17 +332,18 @@ def _handle_get_flat_items(header: dict) -> tuple[dict, bytes]:
 
   tessellation = _get_lod_tessellation(
       header.get('radius', 1.0), header.get('frequency', 1))
-  camera_position = header['camera_position']
-  center = flat_mesh_export.center_point_from_camera(
-      tessellation, camera_position)
+  center = _resolve_flat_center(tessellation, header)
   items = [
       {**payload, 'x': x, 'y': y, 'z': 0.0}
       for payload, x, y
       in flat_mesh_export.flatten_visible_items(
-          tessellation, center, camera_position)
+          tessellation, center, header['camera_position'])
   ]
 
-  return {'type': 'items', 'id': header.get('id'), 'items': items}, b''
+  return {
+      'type': 'items', 'id': header.get('id'), 'items': items,
+      'center': flat_mesh_export.center_to_json(tessellation, center),
+  }, b''
 
 
 _HANDLERS: dict[str, Callable[[dict], tuple[dict, bytes]]] = {

@@ -97,13 +97,17 @@ function registerIpcHandlers(pythonBridge, getWindows) {
       frequency: request.frequency,
       camera_position: request.cameraPosition,
       auto_subdivide: request.autoSubdivide,
+      center: request.center,
+      pan_offset: request.panOffset,
     });
 
     const positions = new Float32Array(copyToAlignedArrayBuffer(
         body, 0, header.positions_byte_length));
     const indices = new Uint32Array(copyToAlignedArrayBuffer(
         body, header.positions_byte_length, header.indices_byte_length));
-    return { positions, indices, sectors: header.sectors };
+    return {
+      positions, indices, sectors: header.sectors, center: header.center,
+    };
   });
 
   ipcMain.handle('items:get', async (_event, request) => {
@@ -124,8 +128,10 @@ function registerIpcHandlers(pythonBridge, getWindows) {
       radius: request.radius,
       frequency: request.frequency,
       camera_position: request.cameraPosition,
+      center: request.center,
+      pan_offset: request.panOffset,
     });
-    return { items: header.items };
+    return { items: header.items, center: header.center };
   });
 
   pythonBridge.on('python:status', (status) => {

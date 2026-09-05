@@ -393,6 +393,38 @@ class SphericalTessellation(Tessellation):
     y = angle * self._radius * (tangent_unit @ e_y)
     return list(zip(x.tolist(), y.tolist()))
 
+  def unflatten_point(
+      self, center: IsometricPoint, x: float, y: float) -> IsometricPoint:
+    """The exact inverse of `flatten_region`: the point that `(x, y)`
+    (in `flatten_region`'s own output units and `(e_x, e_y)` convention)
+    represents, `center`'s exponential map rather than its log map.
+
+    Args:
+      center: The point `(x, y)` is relative to.
+      x: Offset along `_tangent_basis(center)`'s first axis.
+      y: Offset along `_tangent_basis(center)`'s second axis.
+
+    Returns:
+      The point at true geodesic distance `hypot(x, y)` from `center`, in
+      the direction `(x, y)` encodes. Returns `center` itself, unchanged,
+      when `(x, y)` is (numerically) the origin.
+    """
+    distance = math.hypot(x, y)
+    if distance < 1e-12:
+      return center
+
+    center_dir = self._point_to_3d_unit(center)
+    e_x, e_y = self._tangent_basis(center_dir)
+    tangent_dir = (x / distance) * e_x + (y / distance) * e_y
+
+    angle = distance / self._radius
+    new_dir = math.cos(angle) * center_dir + math.sin(angle) * tangent_dir
+    new_dir /= np.linalg.norm(new_dir)
+
+    colatitude = math.acos(np.clip(new_dir[2], -1.0, 1.0))
+    longitude = math.atan2(new_dir[1], new_dir[0]) % (2.0 * math.pi)
+    return self.new_point_at_coords(colatitude, longitude)
+
   def _tangent_basis(
       self, direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """An arbitrary-but-stable orthonormal basis for the plane

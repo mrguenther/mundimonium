@@ -112,6 +112,29 @@ export class FlatMapCameraController {
     this._controls.update();
   }
 
+  /**
+   * Resets the camera (and `OrbitControls`' own target, which must stay
+   * in sync with it -- see `_controls`) to `(0, 0)`, keeping the current
+   * height/zoom -- for when a fresh `flatten_region` call has just been
+   * re-centered on wherever the view currently is, so panning offsets
+   * accumulated against the *old* center should reset to zero rather
+   * than carrying over against the new one.
+   *
+   * Runs through `_changeDebouncer.runSuppressed` because `OrbitControls`
+   * detects "change" by diffing against its own last-seen position/
+   * target (not by anything panning-specific), so this reset would
+   * otherwise fire a synthetic 'change' event whenever the camera had
+   * actually panned -- re-triggering the very `onChange` callback this
+   * recenter is a response to, one redundant extra time.
+   */
+  recenter() {
+    this._changeDebouncer.runSuppressed(() => {
+      this.camera.position.set(0, 0, this.camera.position.z);
+      this._controls.target.set(0, 0, 0);
+      this._controls.update();
+    });
+  }
+
   /** @param {boolean} enabled */
   setEnabled(enabled) {
     this._controls.enabled = enabled;

@@ -4,7 +4,7 @@ import { SceneManager } from './scene/SceneManager.js';
 import {
   FlatMapCameraController, OrbitCameraController,
 } from './scene/CameraController.js';
-import { buildGeometry, buildShadedMesh } from './scene/MeshLoader.js';
+import { buildGeometry, buildShadedMesh, buildWireframe } from './scene/MeshLoader.js';
 import { buildItemSprites } from './scene/ItemLoader.js';
 
 const statusElement = document.getElementById('status');
@@ -80,8 +80,25 @@ async function main() {
   });
 
   let mesh;
+  let wireframe; // debug overlay -- see `MeshLoader.buildWireframe`'s docstring
   let lastSectors = [];
   const itemGroup = new THREE.Group();
+
+  /**
+   * Swaps `mesh`'s geometry (disposing the old one) and keeps `wireframe`
+   * in sync with it -- the one place geometry actually changes, so every
+   * refresh path (LOD, flat, generic-demo-toggle) shares this instead of
+   * repeating the same three lines and risking the wireframe drifting out
+   * of sync with what it's supposed to be outlining.
+   *
+   * @param {THREE.BufferGeometry} newGeometry
+   */
+  function updateMeshGeometry(newGeometry) {
+    mesh.geometry.dispose();
+    mesh.geometry = newGeometry;
+    wireframe.geometry.dispose();
+    wireframe.geometry = new THREE.WireframeGeometry(newGeometry);
+  }
 
   // True exactly while `DEBUG_TOGGLE_GENERIC_KEY`'s demo mesh is showing --
   // suppresses the camera-driven LOD/flat-mode refresh loop below, which
@@ -89,12 +106,21 @@ async function main() {
   let viewingGenericDemo = false;
 
   // Non-null exactly while the flat map is the active mode. Its camera is
-  // rebuilt fresh each time flat mode is entered; `flatModeCameraPosition`
-  // is the 3D camera position flat mode was entered with, reused so a
-  // debug-triggered subdivide can refresh the same flattened view (see the
-  // plan: panning/zooming *within* flat mode doesn't itself re-fetch).
+  // rebuilt fresh each time flat mode is entered. `flatModeCameraPosition`
+  // is the 3D camera position flat mode was entered with -- used only for
+  // that first request, since a real 3D position stops being meaningful
+  // once navigation continues in 2D (see `flatCenter`).
   let flatController = null;
   let flatModeCameraPosition = null;
+
+  // The server's own resolved center for the flattened view currently
+  // showing -- `null` until the first `getFlatMesh`/`getFlatItems`
+  // response arrives after entering flat mode. Once set, every further
+  // refresh re-centers on it (offset by however far `flatController`'s
+  // camera has panned since), rather than reusing the increasingly stale
+  // `flatModeCameraPosition`, so the projection itself updates in real
+  // time as you pan instead of just sliding a frozen snapshot around.
+  let flatCenter = null;
 
   // `switchToFlatMode` awaits a round-trip before `orbitController` is
   // disabled, so a second drag/zoom in that gap could otherwise trigger a
@@ -108,8 +134,7 @@ async function main() {
       cameraPosition: cameraPositionArray(orbitController.camera),
     });
     lastSectors = meshData.sectors;
-    mesh.geometry.dispose();
-    mesh.geometry = buildGeometry(meshData);
+    updateMeshGeometry(buildGeometry(meshData));
     return meshData;
   }
 
@@ -124,24 +149,48 @@ async function main() {
     }
   }
 
+  /**
+   * The request fields that tell the server to re-center exactly on
+   * wherever the flat view currently is, once a center is already known
+   * (every call after flat mode's first) -- `{}` before that, so the
+   * request falls back to deriving a center from `flatModeCameraPosition`
+   * instead (see `server.py`'s own `_resolve_flat_center`).
+   */
+  function flatRecenterRequestFields() {
+    if (!flatCenter) {
+      return {};
+    }
+    return {
+      center: flatCenter,
+      panOffset: [
+        flatController.camera.position.x, flatController.camera.position.y,
+      ],
+    };
+  }
+
   async function refreshFlatMesh() {
     const meshData = await window.mundimonium.getFlatMesh({
       ...TESSELLATION, cameraPosition: flatModeCameraPosition,
+      ...flatRecenterRequestFields(),
     });
     lastSectors = meshData.sectors;
-    mesh.geometry.dispose();
-    mesh.geometry = buildGeometry(meshData);
+    flatCenter = meshData.center;
+    updateMeshGeometry(buildGeometry(meshData));
+    flatController.recenter();
     return meshData;
   }
 
   async function refreshFlatItems() {
-    const { items } = await window.mundimonium.getFlatItems({
+    const { items, center } = await window.mundimonium.getFlatItems({
       ...TESSELLATION, cameraPosition: flatModeCameraPosition,
+      ...flatRecenterRequestFields(),
     });
+    flatCenter = center;
     itemGroup.clear();
     for (const sprite of buildItemSprites(items)) {
       itemGroup.add(sprite);
     }
+    flatController.recenter();
   }
 
   async function switchToFlatMode() {
@@ -151,6 +200,7 @@ async function main() {
     switchingModes = true;
     try {
       flatModeCameraPosition = cameraPositionArray(orbitController.camera);
+      flatCenter = null; // fresh entry -- derive the center from 3D, not a stale prior visit's
       const halfHeight = Math.max(
           altitudeAboveSurface(flatModeCameraPosition), 0.01);
 
@@ -165,7 +215,15 @@ async function main() {
             flatController.camera.top / flatController.camera.zoom;
         if (visibleHalfHeight > FLAT_MODE_THRESHOLD * SIDE_LENGTH) {
           switchToOrbitMode();
+          return;
         }
+        // Re-centers the projection on wherever the view now is, exactly
+        // (see `flatRecenterRequestFields`) -- without this, panning
+        // would just slide a frozen snapshot around instead of updating
+        // it in real time.
+        Promise.all([refreshFlatMesh(), refreshFlatItems()]).catch((error) => {
+          setStatus(`Failed to update flat view: ${error.message}`);
+        });
       });
     } finally {
       switchingModes = false;
@@ -173,9 +231,27 @@ async function main() {
   }
 
   function switchToOrbitMode() {
+    // `orbitController.camera` hasn't moved since flat mode was entered
+    // (it was disabled, not driven, the whole time) -- it's still sitting
+    // right at the threshold that triggered the switch in the first
+    // place. Without repositioning it here, the very next `onChange` tick
+    // would see that same too-close position and immediately switch back
+    // into flat mode. Push it out along its existing look direction to
+    // match how far the user actually zoomed out while in flat mode --
+    // the flat camera's own current zoom already encodes that distance
+    // exactly, via the same `visibleHalfHeight`-as-altitude convention
+    // `switchToFlatMode` used to set it up to begin with.
+    const visibleHalfHeight =
+        flatController.camera.top / flatController.camera.zoom;
+    const direction = orbitController.camera.position.clone().normalize();
+    orbitController.camera.position.copy(
+        direction.multiplyScalar(TESSELLATION.radius + visibleHalfHeight));
+    orbitController.camera.lookAt(0, 0, 0);
+
     flatController.dispose();
     flatController = null;
     flatModeCameraPosition = null;
+    flatCenter = null;
     orbitController.setEnabled(true);
     sceneManager.setActiveController(orbitController);
     refreshLodMesh().catch((error) => {
@@ -196,6 +272,8 @@ async function main() {
     const built = buildShadedMesh(meshData);
     mesh = built.mesh;
     sceneManager.addToScene(mesh);
+    wireframe = buildWireframe(mesh.geometry);
+    sceneManager.addToScene(wireframe);
     for (const light of built.lights) {
       sceneManager.addToScene(light);
     }
@@ -258,15 +336,13 @@ async function main() {
         const meshData = await window.mundimonium.getLodMesh(
             { ...TESSELLATION, cameraPosition });
         lastSectors = meshData.sectors;
-        mesh.geometry.dispose();
-        mesh.geometry = buildGeometry(meshData);
+        updateMeshGeometry(buildGeometry(meshData));
         viewingGenericDemo = false;
         await refreshItems();
       } else {
         const meshData = await window.mundimonium.getMesh(GENERIC_TESSELLATION);
         lastSectors = []; // subdivide/LOD refresh isn't supported here
-        mesh.geometry.dispose();
-        mesh.geometry = buildGeometry(meshData);
+        updateMeshGeometry(buildGeometry(meshData));
         viewingGenericDemo = true;
         const { items } = await window.mundimonium.getItems(
             { ...GENERIC_TESSELLATION, cameraPosition });

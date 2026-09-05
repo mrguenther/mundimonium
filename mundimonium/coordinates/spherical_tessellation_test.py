@@ -180,6 +180,37 @@ def test_flatten_region_of_no_targets_returns_an_empty_list(fine_sphere):
 
 
 # ---------------------------------------------------------------------------
+# unflatten_point
+# ---------------------------------------------------------------------------
+
+def test_unflatten_point_round_trips_with_flatten_region(sphere):
+  center = sphere.new_point_at_coords(1.0, 1.0)
+  targets = [
+      sphere.new_point_at_coords(0.5, 0.5),
+      sphere.new_point_at_coords(2.0, 4.0),
+      sphere.new_point_at_coords(1.2, 0.9),
+  ]
+  positions = sphere.flatten_region(center, targets)
+  for target, (x, y) in zip(targets, positions):
+    recovered = sphere.unflatten_point(center, x, y)
+    assert sphere.point_to_3d_position(recovered) == pytest.approx(
+        sphere.point_to_3d_position(target), abs=1e-6)
+
+
+def test_unflatten_point_of_zero_offset_returns_center_unchanged(sphere):
+  center = sphere.new_point_at_coords(1.0, 1.0)
+  assert sphere.unflatten_point(center, 0.0, 0.0) is center
+
+
+def test_unflatten_point_preserves_geodesic_distance(fine_sphere):
+  center = fine_sphere.new_point_at_coords(1.0, 1.0)
+  for x, y in [(0.3, 0.0), (0.0, -0.4), (0.2, 0.25)]:
+    recovered = fine_sphere.unflatten_point(center, x, y)
+    assert fine_sphere.geodesic_distance(center, recovered) == pytest.approx(
+        math.hypot(x, y), rel=1e-6)
+
+
+# ---------------------------------------------------------------------------
 # geodesic_distance / shortest_path
 # ---------------------------------------------------------------------------
 

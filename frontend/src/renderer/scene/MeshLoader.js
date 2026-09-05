@@ -35,3 +35,24 @@ export function buildShadedMesh(meshData) {
 
   return { mesh, lights: [directional, ambient] };
 }
+
+/**
+ * A `THREE.LineSegments` overlay drawing every triangle edge in `geometry`
+ * -- `THREE.WireframeGeometry`, not `THREE.EdgesGeometry`: the latter only
+ * draws edges between faces whose normals differ by more than a threshold
+ * angle, which would render as nearly empty on flat mode's mesh (every
+ * triangle there is coplanar, sharing the same computed `+Z` normal, so
+ * adjacent triangles' shared edges wouldn't qualify). Primarily a debug
+ * aid: flat mode has no shading variation at all to reveal whether
+ * `flatten_region` is actually doing anything beyond a static orthographic
+ * snapshot, but the mesh topology traced out by these edges will.
+ *
+ * @param {THREE.BufferGeometry} geometry
+ * @param {number} [color]
+ * @returns {THREE.LineSegments}
+ */
+export function buildWireframe(geometry, color = 0x000000) {
+  const wireframeGeometry = new THREE.WireframeGeometry(geometry);
+  const material = new THREE.LineBasicMaterial({ color });
+  return new THREE.LineSegments(wireframeGeometry, material);
+}

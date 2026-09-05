@@ -34,14 +34,23 @@ contextBridge.exposeInMainWorld('mundimonium', {
 
   /**
    * Like `getLodMesh`, but positions are flattened (a locally flat 2D
-   * projection, `z` always `0`) around the mesh point the camera is
-   * currently over, rather than in true 3D.
+   * projection, `z` always `0`) around a center point, rather than in
+   * true 3D. `cameraPosition` alone (flat mode's initial entry) derives
+   * that center from a real 3D position; once `center` (a prior
+   * response's own `center`, echoed back) and `panOffset` (how far the
+   * flat camera has since moved from where that center was established)
+   * are also given, the center is re-derived exactly via `SphericalTessellation
+   * .unflatten_point` instead -- `cameraPosition` is still required
+   * either way (see `getFlatItems`).
    *
    * @param {{ tessellation: string, radius?: number, frequency?: number,
-   *   cameraPosition: [number, number, number], autoSubdivide?: boolean }}
-   *   request
+   *   cameraPosition: [number, number, number], autoSubdivide?: boolean,
+   *   center?: { face: number, b: number, s: number },
+   *   panOffset?: [number, number] }} request
    * @returns {Promise<{ positions: Float32Array, indices: Uint32Array,
-   *   sectors: object[] }>}
+   *   sectors: object[], center: { face: number, b: number, s: number } }>}
+   *   `center` is the resolved center this response was actually built
+   *   around -- pass it back as the next call's own `center`.
    */
   getFlatMesh: (request) => ipcRenderer.invoke('mesh:getFlat', request),
 
@@ -55,12 +64,19 @@ contextBridge.exposeInMainWorld('mundimonium', {
 
   /**
    * Like `getItems`, but `x`/`y` are flattened the same way
-   * `getFlatMesh`'s positions are, and `z` is always `0`.
+   * `getFlatMesh`'s positions are, and `z` is always `0`. `cameraPosition`
+   * is always required here, even once `center`/`panOffset` are also
+   * given -- it's still used to derive item-visibility `scale` (not
+   * positioning), which isn't yet tracked through flat-mode zooming (see
+   * the plan).
    *
    * @param {{ tessellation: string, radius?: number, frequency?: number,
-   *   cameraPosition: [number, number, number] }} request
+   *   cameraPosition: [number, number, number],
+   *   center?: { face: number, b: number, s: number },
+   *   panOffset?: [number, number] }} request
    * @returns {Promise<{ items: { kind: string, label?: string, x: number,
-   *   y: number, z: number }[] }>}
+   *   y: number, z: number }[],
+   *   center: { face: number, b: number, s: number } }>}
    */
   getFlatItems: (request) => ipcRenderer.invoke('items:getFlat', request),
 

@@ -1,11 +1,13 @@
 import io
 
 import numpy as np
+import pytest
 
 from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshFace
 from mundimonium.coordinates.relaxable_lod_mesh import RelaxableLodMeshFace
 from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
+from mundimonium.rendering import flat_mesh_export
 from mundimonium.rendering import server
 from mundimonium.rendering.protocol import read_frame, write_frame
 from mundimonium.rendering.server import dispatch, serve
@@ -242,6 +244,38 @@ def test_get_flat_mesh_returns_a_valid_response_with_zero_z():
       response_body[:response_header['positions_byte_length']],
       dtype=np.float32).reshape(-1, 3)
   assert np.all(positions[:, 2] == 0.0)
+  assert {'face', 'b', 's'} <= response_header['center'].keys()
+
+
+def test_get_flat_mesh_with_pan_offset_recenters_via_unflatten_point():
+  radius = 60.0
+  entry_header = {
+      'type': 'get_flat_mesh', 'id': '11b', 'tessellation': 'spherical',
+      'radius': radius, 'frequency': 1, 'camera_position': [0.0, 0.0, 6000.0],
+  }
+  entry_response, _ = dispatch(entry_header, b'')
+  first_center = entry_response['center']
+
+  pan_offset = [5.0, -3.0]
+  panned_header = {
+      'type': 'get_flat_mesh', 'id': '11c', 'tessellation': 'spherical',
+      'radius': radius, 'frequency': 1, 'camera_position': [0.0, 0.0, 6000.0],
+      'center': first_center, 'pan_offset': pan_offset,
+  }
+  panned_response, _ = dispatch(panned_header, b'')
+
+  # Independently compute the expected new center the same way the
+  # server should have, and confirm the response's own resolved center
+  # matches it.
+  tessellation = server._get_lod_tessellation(radius, 1)
+  reference_point = flat_mesh_export.center_from_json(
+      tessellation, first_center)
+  expected_center = tessellation.unflatten_point(reference_point, *pan_offset)
+  actual_center = flat_mesh_export.center_from_json(
+      tessellation, panned_response['center'])
+  assert tessellation.point_to_3d_position(
+      actual_center) == pytest.approx(
+          tessellation.point_to_3d_position(expected_center))
 
 
 def test_get_flat_items_returns_seeded_demo_items_with_zero_z():
@@ -258,3 +292,32 @@ def test_get_flat_items_returns_seeded_demo_items_with_zero_z():
   assert {'Anchorhold', 'Millbrook', 'Stonegate'} <= labels
   for item in response_header['items']:
     assert item['z'] == 0.0
+  assert {'face', 'b', 's'} <= response_header['center'].keys()
+
+
+def test_get_flat_items_with_pan_offset_uses_the_recentered_point():
+  radius = 70.0
+  camera_position = [0.0, 0.0, 7000.0]
+  entry_header = {
+      'type': 'get_flat_items', 'id': '12b', 'tessellation': 'spherical',
+      'radius': radius, 'frequency': 1, 'camera_position': camera_position,
+  }
+  entry_response, _ = dispatch(entry_header, b'')
+
+  pan_offset = [2.0, 1.5]
+  panned_header = {
+      'type': 'get_flat_items', 'id': '12c', 'tessellation': 'spherical',
+      'radius': radius, 'frequency': 1, 'camera_position': camera_position,
+      'center': entry_response['center'], 'pan_offset': pan_offset,
+  }
+  panned_response, _ = dispatch(panned_header, b'')
+
+  tessellation = server._get_lod_tessellation(radius, 1)
+  reference_point = flat_mesh_export.center_from_json(
+      tessellation, entry_response['center'])
+  expected_center = tessellation.unflatten_point(reference_point, *pan_offset)
+  actual_center = flat_mesh_export.center_from_json(
+      tessellation, panned_response['center'])
+  assert tessellation.point_to_3d_position(
+      actual_center) == pytest.approx(
+          tessellation.point_to_3d_position(expected_center))

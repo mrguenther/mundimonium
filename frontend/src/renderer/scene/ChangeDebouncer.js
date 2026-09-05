@@ -11,6 +11,7 @@ export class ChangeDebouncer {
   /** @param {{ addEventListener: (type: string, listener: () => void) => void }} source */
   constructor(source) {
     this._listeners = [];
+    this._suppressed = false;
     source.addEventListener('change', () => this._onSourceChange());
   }
 
@@ -40,7 +41,27 @@ export class ChangeDebouncer {
     this._listeners = [];
   }
 
+  /**
+   * Runs `fn`, ignoring any 'change' events the source fires as a direct
+   * side effect -- for a caller that needs to programmatically move the
+   * source (e.g. resetting a camera to a new origin) without that motion
+   * re-triggering debounced callbacks meant for actual user input.
+   *
+   * @param {() => void} fn
+   */
+  runSuppressed(fn) {
+    this._suppressed = true;
+    try {
+      fn();
+    } finally {
+      this._suppressed = false;
+    }
+  }
+
   _onSourceChange() {
+    if (this._suppressed) {
+      return;
+    }
     for (const listener of this._listeners) {
       clearTimeout(listener.timer);
       listener.timer = setTimeout(listener.callback, listener.debounceMs);
