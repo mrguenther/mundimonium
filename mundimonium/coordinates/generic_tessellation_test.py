@@ -503,70 +503,72 @@ def test_discover_nearby_crosses_saddle_vertex():
   face_2 = tess.add_face([center, c, d])
   assert all(face_1.face_on_edge(d) is not face_2 for d in IsometricDirection)
 
-  _, nearby_faces, _ = generic_tessellation._discover_nearby([center], 10.0)
+  _, nearby_faces, _ = generic_tessellation._discover_nearby([center], 10)
   assert face_1 in nearby_faces
   assert face_2 in nearby_faces
 
 
-def test_face_own_transform_for_itself_is_identity(relaxable_icosahedron):
+def test_face_own_corners_are_pinned_at_canonical_positions(
+    relaxable_icosahedron):
   _, _, faces = relaxable_icosahedron
   face = faces[1]
-  transform = face.flatten_local_face_transform[face]
-  assert transform.linear == pytest.approx(np.eye(2))
-  assert transform.translation == pytest.approx(np.zeros(2), abs=1e-9)
+  positions = face.flattened_positions
+  expected = _recentered_local_frame(face)
+  assert positions[face.vertex_b] == pytest.approx(expected[0])
+  assert positions[face.vertex_s] == pytest.approx(expected[1])
+  assert positions[face.vertex_d] == pytest.approx(expected[2])
 
 
-def test_flatten_local_face_transform_is_cached(relaxable_icosahedron):
+def test_flattened_positions_is_cached(relaxable_icosahedron):
   _, verts, faces = relaxable_icosahedron
   face = faces[2]
-  assert face.flatten_local_face_transform is face.flatten_local_face_transform
+  assert face.flattened_positions is face.flattened_positions
 
   vertex = verts[2]
-  assert (vertex.flatten_local_face_transform
-          is vertex.flatten_local_face_transform)
+  assert vertex.flattened_positions is vertex.flattened_positions
 
 
-def test_flatten_local_face_transform_invalidated_after_new_face_added():
+def test_flattened_positions_invalidated_after_new_face_added():
   tess, _, faces = _relaxable_icosahedron()
   face = faces[0]
-  cached = face.flatten_local_face_transform
-  assert face._flatten_transforms is cached
+  cached = face.flattened_positions
+  assert face._flattened_positions is cached
 
   v_new = RelaxableVertex([0.0, 0.0, 0.0])
   tess.add_face([face.vertex_b, face.vertex_s, v_new])
 
-  assert face._flatten_transforms is None
-  assert face.vertex_b._flatten_transforms is None
-  assert face.vertex_s._flatten_transforms is None
+  assert face._flattened_positions is None
+  assert face.vertex_b._flattened_positions is None
+  assert face.vertex_s._flattened_positions is None
 
 
-def test_flatten_local_face_transform_invalidation_is_selective(monkeypatch):
-  # `RELAXATION_RADIUS` (3.0) comfortably covers this entire 20-face
-  # icosahedron from any single face, so nothing would be "far" enough
-  # to survive invalidation at the default radius -- shrink it first, on
+def test_flattened_positions_invalidation_is_selective(monkeypatch):
+  # The default `RELAXATION_RADIUS` comfortably covers this entire
+  # 20-face icosahedron from any single face, so nothing would be "far"
+  # enough to survive invalidation at that radius -- shrink it first, on
   # a fresh tessellation, so a face reached only via a second hop is
   # genuinely out of range.
-  monkeypatch.setattr(generic_tessellation, "RELAXATION_RADIUS", 0.05)
+  monkeypatch.setattr(generic_tessellation, "RELAXATION_RADIUS", 1)
 
   tess, _, faces = _relaxable_icosahedron()
   face = faces[0]
 
   far_face = None
   for candidate in faces:
-    if candidate is not face and candidate not in face.flatten_local_face_transform:
+    if candidate is not face and candidate not in face.nearby_faces:
       far_face = candidate
       break
   assert far_face is not None, "expected some face outside the shrunk radius"
 
-  far_face.flatten_local_face_transform  # force it to be cached
-  cached = far_face._flatten_transforms
+  far_face.flattened_positions  # force it to be cached
+  cached = far_face._flattened_positions
 
   v_new = RelaxableVertex([0.0, 0.0, 0.0])
   tess.add_face([face.vertex_b, face.vertex_s, v_new])
 
   # `far_face` lies outside `RELAXATION_RADIUS` of the new face -- its
   # cache should be untouched.
-  assert far_face._flatten_transforms is cached
+  assert far_face._flattened_positions is cached
 
 
 def test_relaxable_vertex_blend_matches_manual_equal_weighted_average(
@@ -576,22 +578,28 @@ def test_relaxable_vertex_blend_matches_manual_equal_weighted_average(
   # average.
   _, verts, faces = relaxable_icosahedron
   vertex = verts[0]
+  target_vertex = verts[1]  # present in every adjacent face's own dict,
+                             # since the default radius covers this whole mesh
   adjacent = vertex.adjacent_faces()
-  target_face = adjacent[0]  # present in every adjacent face's own dict,
-                              # since RELAXATION_RADIUS covers this whole mesh
 
-  blended = vertex.flatten_local_face_transform[target_face]
-  manual = generic_tessellation._blend_transforms([
-      (1.0, generic_tessellation._AffineTransform2D(
-          linear=face.flatten_local_face_transform[target_face].linear,
-          translation=(
-              face.flatten_local_face_transform[target_face].translation
-              - _recentered_local_frame(face)[
-                  face.direction_toward_vertex(vertex).value])))
+  blended = vertex.flattened_positions[target_vertex]
+  manual = generic_tessellation._blend_positions([
+      (1.0, face.flattened_positions[target_vertex]
+            - face.flattened_positions[vertex])
       for face in adjacent
   ])
-  assert blended.linear == pytest.approx(manual.linear)
-  assert blended.translation == pytest.approx(manual.translation)
+  assert blended == pytest.approx(manual)
+
+
+def test_relaxable_vertex_own_position_is_exactly_the_origin(
+    relaxable_icosahedron):
+  # Unlike an earlier, transform-blending design (which only landed
+  # *close to* the origin here), blending raw positions recenters every
+  # contribution exactly, so the blend is exactly `(0, 0)` too.
+  _, verts, _faces = relaxable_icosahedron
+  vertex = verts[0]
+  assert vertex.flattened_positions[vertex] == pytest.approx(
+      np.zeros(2), abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +608,7 @@ def test_relaxable_vertex_blend_matches_manual_equal_weighted_average(
 
 def test_flatten_region_requires_relaxable_vertex_type():
   # `face_type=RelaxableFace` alone isn't enough -- a plain
-  # `TessellationVertex` has no `flatten_local_face_transform`.
+  # `TessellationVertex` has no `flattened_positions`.
   tess, _, faces = build_icosahedron(face_type=RelaxableFace)
   center = faces[0].centroid_local_coords
   with pytest.raises(AttributeError):
@@ -614,15 +622,15 @@ def test_flatten_region_centroid_lands_exactly_at_origin(relaxable_icosahedron):
   assert (x, y) == pytest.approx((0.0, 0.0), abs=1e-9)
 
 
-def test_flatten_region_vertex_lands_close_to_origin(relaxable_icosahedron):
+def test_flatten_region_vertex_lands_exactly_at_origin(relaxable_icosahedron):
+  # Unlike an earlier, transform-blending design (which only landed
+  # *close to* the origin here), blending raw positions makes this exact
+  # -- see `RelaxableVertex`'s own docstring.
   tess, _, faces = relaxable_icosahedron
   face = faces[0]
   vertex_point = IsometricPoint(face, face.altitude, 0.0)  # vertex_b
   (x, y), = tess.flatten_region(vertex_point, [vertex_point])
-  # Not required to be bit-exact (see `RelaxableVertex`'s own docstring)
-  # -- just close, on the scale of one face's own circumradius.
-  circumradius = face.side_length / math.sqrt(3.0)
-  assert math.hypot(x, y) < 0.1 * circumradius
+  assert (x, y) == pytest.approx((0.0, 0.0), abs=1e-9)
 
 
 def test_flatten_region_immediate_neighbors_land_near_their_true_distance(
@@ -680,7 +688,7 @@ def test_flatten_region_same_center_is_stable(relaxable_icosahedron):
 
   # Bit-for-bit identical, unlike the earlier live-relaxation design:
   # everything involved is precomputed and cached, so repeating the same
-  # call re-reads exactly the same cached transforms every time.
+  # call re-reads exactly the same cached positions every time.
   assert first == second
 
 
@@ -694,41 +702,36 @@ def test_flatten_region_degenerate_positions_match_direct_lookup(
 
   # Exactly at the centroid: only the face's own anchor should
   # contribute.
-  centroid_blend = GenericTessellation._blended_transforms_at(
+  centroid_blend = GenericTessellation._blended_positions_at(
       face, face.centroid_local_coords)
-  for key, transform in face.flatten_local_face_transform.items():
-    assert centroid_blend[key].linear == pytest.approx(transform.linear)
-    assert centroid_blend[key].translation == pytest.approx(
-        transform.translation)
+  for key, position in face.flattened_positions.items():
+    assert centroid_blend[key] == pytest.approx(position)
 
   # Exactly at vertex_b: only vertex_b's own anchor should contribute.
   vertex_point = IsometricPoint(face, face.altitude, 0.0)
-  vertex_blend = GenericTessellation._blended_transforms_at(face, vertex_point)
-  for key, transform in face.vertex_b.flatten_local_face_transform.items():
-    if key not in face.flatten_local_face_transform:
+  vertex_blend = GenericTessellation._blended_positions_at(face, vertex_point)
+  for key, position in face.vertex_b.flattened_positions.items():
+    if key not in face.flattened_positions:
       continue
-    assert vertex_blend[key].linear == pytest.approx(transform.linear)
-    assert vertex_blend[key].translation == pytest.approx(
-        transform.translation)
+    assert vertex_blend[key] == pytest.approx(position)
 
   # On the b-s edge (the d-weight is exactly 0): only vertex_b and
   # vertex_s should contribute, not the centroid.
   edge_point = IsometricPoint(face, 0.5 * face.altitude, 0.5 * face.altitude)
-  edge_blend = GenericTessellation._blended_transforms_at(face, edge_point)
+  edge_blend = GenericTessellation._blended_positions_at(face, edge_point)
   manual = {}
-  for key in face.flatten_local_face_transform:
+  for key in face.flattened_positions:
     weighted = [
-        (1.0, transform_dict[key])
-        for transform_dict in (
-            face.vertex_b.flatten_local_face_transform,
-            face.vertex_s.flatten_local_face_transform)
-        if key in transform_dict
+        (1.0, positions[key])
+        for positions in (
+            face.vertex_b.flattened_positions,
+            face.vertex_s.flattened_positions)
+        if key in positions
     ]
     if weighted:
-      manual[key] = generic_tessellation._blend_transforms(weighted)
-  for key, transform in manual.items():
-    assert edge_blend[key].linear == pytest.approx(transform.linear)
-    assert edge_blend[key].translation == pytest.approx(transform.translation)
+      manual[key] = generic_tessellation._blend_positions(weighted)
+  for key, position in manual.items():
+    assert edge_blend[key] == pytest.approx(position)
 
 
 def test_flatten_region_stellated_icosahedron_has_no_nan_across_valences(
@@ -757,13 +760,12 @@ def test_flatten_region_stellated_icosahedron_has_no_nan_across_valences(
 
 def test_flatten_region_raises_for_target_outside_every_anchors_range(
     monkeypatch):
-  # `RELAXATION_RADIUS` (3.0) turns out to comfortably cover an entire
-  # 20-face icosahedron from any single anchor (its faces are small
-  # relative to the radius), so there's no naturally-far-enough point to
-  # reach for on that fixture -- shrink the radius instead, on a fresh
-  # tessellation, so a face reached only via a second hop already falls
-  # outside it.
-  monkeypatch.setattr(generic_tessellation, "RELAXATION_RADIUS", 0.05)
+  # The default `RELAXATION_RADIUS` turns out to comfortably cover an
+  # entire 20-face icosahedron from any single anchor, so there's no
+  # naturally-far-enough point to reach for on that fixture -- shrink the
+  # radius instead, on a fresh tessellation, so a face reached only via a
+  # second hop already falls outside it.
+  monkeypatch.setattr(generic_tessellation, "RELAXATION_RADIUS", 1)
 
   tess, _, faces = _relaxable_icosahedron()
   face = faces[0]
@@ -771,7 +773,7 @@ def test_flatten_region_raises_for_target_outside_every_anchors_range(
 
   far_face = None
   for candidate in faces:
-    if candidate is not face and candidate not in face.flatten_local_face_transform:
+    if candidate is not face and candidate not in face.nearby_faces:
       far_face = candidate
       break
   assert far_face is not None, "expected some face outside the shrunk radius"

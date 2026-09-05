@@ -3,13 +3,20 @@ import math
 import numpy as np
 import pytest
 
+from mundimonium.coordinates.generic_tessellation import (
+    GenericTessellation, RelaxableFace, RelaxableVertex,
+)
 from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshFace
 from mundimonium.coordinates.nesting_iso_grid import SectorItem
 from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
+from mundimonium.coordinates.stellated_icosahedron import (
+    build_stellated_icosahedron,
+)
+from mundimonium.coordinates.tessellation import TessellationVertex
 from mundimonium.rendering.flat_mesh_export import (
     center_point_from_camera, flatten_frontier_to_buffers,
-    flatten_visible_items,
+    flatten_visible_items, nearby_faces,
 )
 from mundimonium.rendering.lod_mesh_export import select_frontier
 
@@ -124,3 +131,68 @@ def test_flatten_visible_items_returns_an_empty_list_with_no_items():
 
   assert flatten_visible_items(
       tess, center, camera_position, tess.tangent_basis_at(center)) == []
+
+
+# ---------------------------------------------------------------------------
+# nearby_faces
+# ---------------------------------------------------------------------------
+
+def test_nearby_faces_for_spherical_excludes_most_of_the_mesh():
+  tess = _make_sphere(radius=1.0, frequency=3)  # 180 faces total
+  center = center_point_from_camera(tess, [0.0, 0.0, 1.3])
+
+  nearby = nearby_faces(tess, center)
+
+  assert center.grid in nearby
+  assert 0 < len(nearby) < len(tess.faces)
+
+
+def test_nearby_faces_for_spherical_costs_the_same_regardless_of_mesh_size():
+  # A regression test for the actual point of using a bounded BFS instead
+  # of scanning every face: the neighborhood size (and therefore the
+  # work done) shouldn't grow just because the mesh has more faces overall.
+  small = _make_sphere(radius=1.0, frequency=3)      # 180 faces
+  large = _make_sphere(radius=1.0, frequency=10)     # 2000 faces
+
+  small_center = center_point_from_camera(small, [0.0, 0.0, 1.3])
+  large_center = center_point_from_camera(large, [0.0, 0.0, 1.3])
+
+  small_count = len(nearby_faces(small, small_center))
+  large_count = len(nearby_faces(large, large_center))
+
+  # Not required to match exactly (face sizes differ slightly by
+  # frequency), but should be the same order of magnitude, not scaling
+  # with the roughly 11x difference in total face count.
+  assert large_count < small_count * 2
+
+
+def test_nearby_faces_for_generic_matches_the_precomputed_nearby_faces():
+  tess, _vertices, _faces = build_stellated_icosahedron(
+      face_type=RelaxableFace, vertex_type=RelaxableVertex)
+  center = IsometricPoint.center(tess.faces[0])
+
+  nearby = nearby_faces(tess, center)
+
+  assert set(nearby) == set(tess.faces[0].nearby_faces)
+
+
+def test_faces_within_hops_reaches_only_the_expected_ring():
+  # Four faces in a fan around a shared central vertex `v1`, each face i
+  # sharing an edge only with face i-1/i+1 -- a small, hand-built mesh
+  # with a known, exact adjacency structure to check the hop-count cutoff
+  # against directly.
+  from mundimonium.rendering.flat_mesh_export import _faces_within_hops
+
+  v1 = TessellationVertex([0.0, 0.0, 0.0])
+  v2 = TessellationVertex([1.0, 0.0, 0.0])
+  v3 = TessellationVertex([0.5, 1.0, 0.0])
+  v4 = TessellationVertex([-0.5, 1.0, 0.0])
+  v5 = TessellationVertex([-1.0, 0.0, 0.0])
+  tess = GenericTessellation()
+  face_a = tess.add_face([v1, v2, v3])
+  face_b = tess.add_face([v1, v3, v4])
+  face_c = tess.add_face([v1, v4, v5])
+
+  assert _faces_within_hops(face_a, 0) == [face_a]
+  assert set(_faces_within_hops(face_a, 1)) == {face_a, face_b}
+  assert set(_faces_within_hops(face_a, 2)) == {face_a, face_b, face_c}

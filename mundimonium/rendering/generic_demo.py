@@ -14,7 +14,9 @@ from mundimonium.coordinates.generic_tessellation import (
 from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.nesting_iso_grid import SectorItem
 from mundimonium.coordinates.relaxable_lod_mesh import RelaxableLodMeshFace
-from mundimonium.coordinates.stellated_icosahedron import build_stellated_icosahedron
+from mundimonium.coordinates.stellated_icosahedron import (
+    build_stellated_icosahedron,
+)
 
 # Hardcoded (face index, label, min_scale, max_scale) demo markers, spread
 # across the 60-face stellated icosahedron -- see `server.py`'s own

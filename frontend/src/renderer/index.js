@@ -7,6 +7,7 @@ import {
 import { buildGeometry, buildShadedMesh, buildWireframe } from './scene/MeshLoader.js';
 import { buildItemSprites } from './scene/ItemLoader.js';
 import { buildFaceIndexLabels } from './scene/DebugFaceLabels.js'; // DEBUG ONLY -- see its own docstring
+import { SurfaceCameraController } from './scene/SurfaceCameraController.js';
 
 const statusElement = document.getElementById('status');
 
@@ -27,8 +28,12 @@ const SIDE_LENGTH = (() => {
 // view hard-cuts between the 3D orbit mode and the flat 2D map mode. Same
 // threshold both directions (no hysteresis) -- a placeholder value,
 // expected to need empirical tuning once there's a real scene to test it
-// against.
-const FLAT_MODE_THRESHOLD = 5.0;
+// against. Deliberately small: flat mode should only ever show a handful
+// of faces around the view center, not most of the mesh (kept in sync,
+// by convention rather than shared code, with `flat_mesh_export.py`'s own
+// `_FLAT_MODE_RENDER_RADIUS_HOPS`, which governs how large a patch the
+// server actually renders once in flat mode).
+const FLAT_MODE_THRESHOLD = 2.0;
 
 // Debug-only stand-in for a real click-to-subdivide UI (not built this
 // phase -- growing LOD detail defaults to off, since it's expected to
@@ -109,10 +114,28 @@ async function main() {
     }
   }
 
-  // True exactly while `DEBUG_TOGGLE_GENERIC_KEY`'s demo mesh is showing --
-  // suppresses the camera-driven LOD/flat-mode refresh loop below, which
-  // only knows how to talk to the spherical world's endpoints.
+  // True exactly while `DEBUG_TOGGLE_GENERIC_KEY`'s demo mesh is showing
+  // (in either its own 3D or flat mode) -- suppresses the camera-driven
+  // LOD/flat-mode refresh loop below, which only knows how to talk to the
+  // spherical world's endpoints.
   let viewingGenericDemo = false;
+
+  // The generic demo's own 3D camera -- a `SurfaceCameraController`
+  // (hugs the mesh surface, not an orbit) -- non-null exactly while
+  // viewing the generic demo in 3D. Unlike `orbitController`, this is
+  // rebuilt fresh each time the demo is (re-)entered rather than kept
+  // alive for the app's whole lifetime, since it's cheap to construct
+  // and there's exactly one demo shape to build it from.
+  let surfaceController = null;
+
+  // The generic demo's own flat-mode center (`{face, b, s}`), remembered
+  // only so `switchToGenericOrbitMode` can resume the surface camera at
+  // the same physical location on exit -- unlike `flatCenter` below,
+  // this is never sent back into a later request, since
+  // `GenericTessellation`'s flat mode has no real-time re-centering to
+  // carry a reference frame forward for (see the plan's own "Deferred"
+  // note): panning here just slides the same frozen snapshot around.
+  let genericFlatCenter = null;
 
   // Non-null exactly while the flat map is the active mode. Its camera is
   // rebuilt fresh each time flat mode is entered. `flatModeCameraPosition`
@@ -283,6 +306,105 @@ async function main() {
     });
   }
 
+  async function refreshSurfaceItems() {
+    const { items } = await window.mundimonium.getItems({
+      ...GENERIC_TESSELLATION,
+      cameraPosition: cameraPositionArray(surfaceController.camera),
+    });
+    itemGroup.clear();
+    for (const sprite of buildItemSprites(items)) {
+      itemGroup.add(sprite);
+    }
+  }
+
+  async function refreshGenericFlatMesh() {
+    const meshData = await window.mundimonium.getFlatMesh({
+      ...GENERIC_TESSELLATION, center: genericFlatCenter,
+    });
+    updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
+    return meshData;
+  }
+
+  async function refreshGenericFlatItems() {
+    const { items } = await window.mundimonium.getFlatItems({
+      ...GENERIC_TESSELLATION, center: genericFlatCenter,
+    });
+    itemGroup.clear();
+    for (const sprite of buildItemSprites(items)) {
+      itemGroup.add(sprite);
+    }
+  }
+
+  async function switchToGenericFlatMode() {
+    if (switchingModes) {
+      return;
+    }
+    switchingModes = true;
+    try {
+      genericFlatCenter = surfaceController.getFlatModeCenter();
+      const halfHeight = Math.max(surfaceController.hoverHeight, 0.01);
+
+      surfaceController.setEnabled(false);
+      flatController = new FlatMapCameraController(
+          sceneManager.renderer.domElement, { halfHeight });
+      await Promise.all([refreshGenericFlatMesh(), refreshGenericFlatItems()]);
+      sceneManager.setActiveController(flatController);
+
+      flatController.onChange(() => {
+        // Inverted relative to the spherical flat mode's own exit check
+        // (`visibleHalfHeight > threshold`) on purpose: the surface
+        // camera enters flat mode by zooming *out* (`h` growing past the
+        // threshold), the opposite direction from the sphere's own
+        // altitude-shrinking entry. Reusing spherical's `>` check
+        // verbatim here would already be satisfied the instant flat mode
+        // is entered (we just crossed that same threshold from below),
+        // bouncing straight back to 3D -- using `<` instead means you
+        // exit by zooming back *in* past the threshold, mirroring how
+        // you got here in the first place.
+        const visibleHalfHeight =
+            flatController.camera.top / flatController.camera.zoom;
+        if (visibleHalfHeight
+            < FLAT_MODE_THRESHOLD * surfaceController.currentFaceSideLength) {
+          switchToGenericOrbitMode().catch((error) => {
+            setStatus(`Failed to switch to 3D: ${error.message}`);
+          });
+        }
+        // No re-fetch on pan, unlike the spherical flat mode's own
+        // `onChange`: `GenericTessellation` has no real-time re-centering
+        // support yet (see the plan's own "Deferred" note), so this stays
+        // a frozen snapshot until the view either exits or re-enters.
+      });
+    } finally {
+      switchingModes = false;
+    }
+  }
+
+  async function switchToGenericOrbitMode() {
+    // Unlike the spherical `switchToOrbitMode`, `surfaceController`
+    // already knows exactly which face/local-position to resume at --
+    // no repositioning heuristic needed, just the flat view's own last
+    // known center and a hover height matching how far it had zoomed out.
+    const visibleHalfHeight =
+        flatController.camera.top / flatController.camera.zoom;
+    const { face, b, s } = genericFlatCenter;
+    surfaceController.recenterAt(face, b, s, Math.max(visibleHalfHeight, 0.01));
+
+    flatController.dispose();
+    flatController = null;
+    genericFlatCenter = null;
+    surfaceController.setEnabled(true);
+    sceneManager.setActiveController(surfaceController);
+
+    // The mesh geometry is still whatever flat mode last set it to (a
+    // flattened, `z = 0` snapshot) -- restore the true 3D one. Re-fetched
+    // rather than cached from generic-3D's own initial load, matching the
+    // spherical `switchToOrbitMode`'s own "always re-fetch on a mode
+    // switch" precedent, even though this particular mesh never changes.
+    const meshData = await window.mundimonium.getMesh(GENERIC_TESSELLATION);
+    updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
+    await refreshSurfaceItems();
+  }
+
   setStatus('Requesting mesh...');
   try {
     const meshData = await window.mundimonium.getLodMesh({
@@ -339,7 +461,7 @@ async function main() {
 
   window.addEventListener('keydown', (event) => {
     if (event.key !== DEBUG_TOGGLE_GENERIC_KEY || flatController) {
-      return; // no generic flat-map support yet -- stay in whichever mode
+      return; // ambiguous which flat mode would apply -- stay put
     }
     toggleGenericDemo().catch((error) => {
       setStatus(`Failed to toggle generic demo: ${error.message}`);
@@ -352,14 +474,18 @@ async function main() {
     }
     switchingModes = true;
     try {
-      const cameraPosition = cameraPositionArray(orbitController.camera);
       if (viewingGenericDemo) {
         // Back to the spherical world, exactly as on initial load.
+        surfaceController.dispose();
+        surfaceController = null;
+        const cameraPosition = cameraPositionArray(orbitController.camera);
         const meshData = await window.mundimonium.getLodMesh(
             { ...TESSELLATION, cameraPosition });
         lastSectors = meshData.sectors;
         updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
         viewingGenericDemo = false;
+        orbitController.setEnabled(true);
+        sceneManager.setActiveController(orbitController);
         await refreshItems();
       } else {
         const meshData = await window.mundimonium.getMesh(GENERIC_TESSELLATION);
@@ -369,12 +495,25 @@ async function main() {
         // debug labels left over from the spherical world.
         updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
         viewingGenericDemo = true;
-        const { items } = await window.mundimonium.getItems(
-            { ...GENERIC_TESSELLATION, cameraPosition });
-        itemGroup.clear();
-        for (const sprite of buildItemSprites(items)) {
-          itemGroup.add(sprite);
-        }
+
+        orbitController.setEnabled(false);
+        surfaceController = new SurfaceCameraController(
+            sceneManager.renderer.domElement, meshData);
+        sceneManager.setActiveController(surfaceController);
+        surfaceController.onChange(() => {
+          const h = surfaceController.hoverHeight;
+          const sideLength = surfaceController.currentFaceSideLength;
+          if (h > FLAT_MODE_THRESHOLD * sideLength) {
+            switchToGenericFlatMode().catch((error) => {
+              setStatus(`Failed to switch to flat mode: ${error.message}`);
+            });
+            return;
+          }
+          refreshSurfaceItems().catch((error) => {
+            setStatus(`Failed to update items: ${error.message}`);
+          });
+        });
+        await refreshSurfaceItems();
       }
     } finally {
       switchingModes = false;

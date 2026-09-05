@@ -26,7 +26,18 @@ export function buildGeometry({ positions, indices }) {
  */
 export function buildShadedMesh(meshData) {
   const geometry = buildGeometry(meshData);
-  const material = new THREE.MeshStandardMaterial({ color: 0x4c8bf5 });
+  // `DoubleSide`: harmless for a properly-wound closed solid (back faces
+  // stay hidden behind front ones from any exterior viewpoint regardless),
+  // but load-bearing for GenericTessellation.flatten_region's flat-mode
+  // output specifically -- its per-face blended affine transforms can
+  // reflect rather than just rotate/scale (a documented, accepted
+  // trade-off, not a bug), flipping some triangles' winding. A single-
+  // sided material would cull exactly those triangles and shade them
+  // inconsistently under a fixed light; DoubleSide renders them correctly
+  // either way by flipping the effective normal for back-facing pixels.
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x4c8bf5, side: THREE.DoubleSide,
+  });
   const mesh = new THREE.Mesh(geometry, material);
 
   const directional = new THREE.DirectionalLight(0xffffff, 2.0);

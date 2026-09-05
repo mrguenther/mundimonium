@@ -5,7 +5,15 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('mundimonium', {
   /**
    * @param {{ tessellation: string, radius?: number, frequency?: number }} request
-   * @returns {Promise<{ positions: Float32Array, indices: Uint32Array }>}
+   * @returns {Promise<{ positions: Float32Array, indices: Uint32Array,
+   *   adjacency: number[][], vertexFaces: number[][] }>} `adjacency[i]` is
+   *   `[neighborB, neighborS, neighborD]` -- the triangle index (into this
+   *   same `indices` buffer, not a vertex index) across the edge opposite
+   *   triangle `i`'s own b/s/d vertex, or `-1` for a mesh boundary edge.
+   *   `vertexFaces[v]` is the triangle indices touching vertex `v`, in
+   *   cyclic order around it (or an arbitrary order for a vertex on an
+   *   open mesh boundary). Used by `SurfaceCameraController` to walk the
+   *   mesh surface without a server round-trip per step.
    */
   getMesh: (request) => ipcRenderer.invoke('mesh:get', request),
 

@@ -53,7 +53,7 @@ def iter_visible_items(
 
 def iter_visible_item_points(
     tessellation: Tessellation,
-    camera_position: Sequence[float],
+    camera_position: Sequence[float] | None,
     scale: float | None = None,
 ) -> Generator[tuple[Any, IsometricPoint]]:
   """Yields every item currently visible at `scale`, with its raw mesh
@@ -80,7 +80,7 @@ def iter_visible_item_points(
 
 
 def _scale_from_camera(
-    tessellation: Tessellation, camera_position: Sequence[float],
+    tessellation: Tessellation, camera_position: Sequence[float] | None,
 ) -> float:
   """The visibility `scale` implied by a camera at `camera_position`.
 

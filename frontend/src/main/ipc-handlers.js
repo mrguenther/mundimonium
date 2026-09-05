@@ -56,7 +56,10 @@ function registerIpcHandlers(pythonBridge, getWindows) {
         body, 0, header.positions_byte_length));
     const indices = new Uint32Array(copyToAlignedArrayBuffer(
         body, header.positions_byte_length, header.indices_byte_length));
-    return { positions, indices };
+    return {
+      positions, indices,
+      adjacency: header.adjacency, vertexFaces: header.vertex_faces,
+    };
   });
 
   ipcMain.handle('mesh:getLod', async (_event, request) => {

@@ -67,6 +67,7 @@ def select_frontier(
     threshold: float = DEFAULT_LOD_THRESHOLD,
     max_depth: int = DEFAULT_MAX_DEPTH,
     auto_subdivide: bool = False,
+    face_indices: Sequence[int] | None = None,
 ) -> list[tuple[LodMeshSector, SectorAddress]]:
   """Selects which sectors to render for a camera at `camera_position`.
 
@@ -83,6 +84,14 @@ def select_frontier(
   after a previous `auto_subdivide=True` call simply stops descending
   into already-built children rather than undoing anything.
 
+  Every top-level face is included somewhere in the result regardless of
+  `threshold`/`max_depth` -- those two only control subdivision *depth*,
+  never whether a face is considered at all. A caller that only wants a
+  *local neighborhood* rendered (e.g. flat mode, where a face on the far
+  side of the mesh would otherwise still show up, badly distorted) needs
+  to restrict `face_indices` itself; this function has no opinion on
+  proximity beyond a single face's own children.
+
   Args:
     tessellation: A `Tessellation` built with a LOD-tree-aware `face_type`
       (`LodMeshFace`, or `RelaxableLodMeshFace` for a `GenericTessellation`).
@@ -94,6 +103,10 @@ def select_frontier(
       top-level face, regardless of distance.
     auto_subdivide: Whether sectors lacking children may be subdivided to
       satisfy `threshold`. Defaults to `False`.
+    face_indices: If given, only these top-level face indices are
+      considered at all (each still recursed into normally) -- every
+      index into `tessellation.faces` otherwise, unchanged from this
+      function's prior behavior.
 
   Returns:
     A list of `(sector, address)` pairs -- the sectors to render, each
@@ -101,7 +114,11 @@ def select_frontier(
   """
   camera_position = np.array(camera_position, dtype=np.float64)
   frontier: list[tuple[LodMeshSector, SectorAddress]] = []
-  for face_index, face in enumerate(tessellation.faces):
+  indices = (
+      range(len(tessellation.faces)) if face_indices is None
+      else face_indices)
+  for face_index in indices:
+    face = tessellation.faces[face_index]
     _select_frontier(
         tessellation, face, SectorAddress(face_index), camera_position,
         threshold, max_depth, auto_subdivide, depth=0, frontier=frontier)

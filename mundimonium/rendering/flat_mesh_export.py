@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from mundimonium.coordinates.isometric import IsometricPoint
+from mundimonium.coordinates.isometric import IsometricDirection, IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshSector
 from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
+from mundimonium.coordinates.tessellation import Tessellation, TessellationFace
 from mundimonium.rendering import item_export
 from mundimonium.rendering.lod_mesh_export import SectorAddress
 
@@ -11,6 +12,16 @@ from typing import Any
 
 import math
 import numpy as np
+
+# How many face-to-face edge crossings from a flat-mode `center`'s own
+# face a face may be and still be rendered -- see `nearby_faces`'s own
+# docstring for why this matters. A tunable placeholder, expected to
+# need empirical adjustment (4 hops measured at ~29 faces on a
+# frequency-3 geodesic sphere); kept in sync only by convention (not
+# shared code) with `index.js`'s own `FLAT_MODE_THRESHOLD`, so the
+# rendered patch is sized to roughly match what's actually visible right
+# at the 3D/flat-mode switch.
+_FLAT_MODE_RENDER_RADIUS_HOPS = 4
 
 
 def center_point_from_camera(
@@ -36,17 +47,20 @@ def center_point_from_camera(
   return tessellation.new_point_at_coords(colatitude, longitude)
 
 
-def center_to_json(
-    tessellation: SphericalTessellation, point: IsometricPoint) -> dict:
+def center_to_json(tessellation: Tessellation, point: IsometricPoint) -> dict:
   """A JSON-safe encoding of `point`, for round-tripping a flat-mode
   center through a response and back into a later request's own
   `center_from_json` call.
 
   `point.grid` must be one of `tessellation`'s own top-level faces (true
-  of anything `new_point_at_coords`/`unflatten_point` return -- neither
-  ever resolves onto a nested LOD sub-sector) -- this doesn't handle a
-  nested `SectorAddress`-style path, unlike `lod_mesh_export.py`'s own
-  address scheme, since it doesn't need to.
+  of anything `new_point_at_coords`/`unflatten_point` return for
+  `SphericalTessellation`, or a `GenericTessellation` surface-camera's
+  own always-exact face reference -- neither ever resolves onto a nested
+  LOD sub-sector) -- this doesn't handle a nested `SectorAddress`-style
+  path, unlike `lod_mesh_export.py`'s own address scheme, since it
+  doesn't need to. Works for any `Tessellation` (only calls `tessellation
+  .faces.index(...)` and constructs a plain `IsometricPoint`), not just
+  `SphericalTessellation`.
 
   Args:
     tessellation: The tessellation `point` belongs to.
@@ -62,8 +76,7 @@ def center_to_json(
   }
 
 
-def center_from_json(
-    tessellation: SphericalTessellation, data: dict) -> IsometricPoint:
+def center_from_json(tessellation: Tessellation, data: dict) -> IsometricPoint:
   """Inverse of `center_to_json`.
 
   Args:
@@ -75,6 +88,60 @@ def center_from_json(
   """
   face = tessellation.faces[data['face']]
   return IsometricPoint(face, data['b'], data['s'])
+
+
+def nearby_faces(
+    tessellation: Tessellation, center: IsometricPoint,
+) -> list[TessellationFace]:
+  """The top-level faces close enough to `center` to render in flat mode.
+
+  Rendering every top-level face regardless of distance (as `lod_mesh_
+  export.select_frontier`'s 3D-orbit callers do, where a far face just
+  becomes one coarse, barely-visible triangle) is wrong for flat mode
+  specifically: `flatten_region` maps the far side of the mesh to wildly
+  different, badly distorted positions that visually stretch across and
+  obscure the actually-relevant nearby region -- and for
+  `GenericTessellation`, a face too far from `center` isn't just
+  distorted, it's outside `flatten_region`'s own precomputed range
+  entirely (`RelaxableFace.flattened_positions`) and raises `ValueError`.
+
+  For `SphericalTessellation`: every face within `_FLAT_MODE_RENDER_
+  RADIUS_HOPS` face-to-face edge crossings of `center.grid`, found by a
+  breadth-first flood fill over `face_on_edge` (see `_faces_within_hops`)
+  -- cost proportional to the faces actually included, never to the
+  mesh's total size, unlike a naive scan checking every face's distance.
+
+  For any other tessellation (`GenericTessellation`): exactly
+  `center.grid`'s own precomputed `nearby_faces` -- already the correct,
+  cheap-to-look-up "nearby" set described above, with no separate
+  distance computation needed.
+  """
+  if isinstance(tessellation, SphericalTessellation):
+    return _faces_within_hops(center.grid, _FLAT_MODE_RENDER_RADIUS_HOPS)
+  return list(center.grid.nearby_faces)
+
+
+def _faces_within_hops(
+    start_face: TessellationFace, max_hops: int,
+) -> list[TessellationFace]:
+  """Every face reachable from `start_face` within `max_hops` face-to-face
+  edge crossings (`face_on_edge`) -- a breadth-first flood fill over the
+  face-adjacency graph, not a scan of the whole mesh, so its cost is
+  proportional to the (small) neighborhood returned, regardless of how
+  large the mesh as a whole is.
+  """
+  visited = {start_face}
+  frontier = [start_face]
+  for _ in range(max_hops):
+    next_frontier = []
+    for face in frontier:
+      for direction in IsometricDirection:
+        neighbor = face.face_on_edge(direction)
+        if neighbor is not None and neighbor not in visited:
+          visited.add(neighbor)
+          next_frontier.append(neighbor)
+    frontier = next_frontier
+  return list(visited)
 
 
 def basis_to_json(basis: tuple[np.ndarray, np.ndarray]) -> dict:
@@ -108,11 +175,27 @@ def basis_from_json(data: dict) -> tuple[np.ndarray, np.ndarray]:
   )
 
 
+def _flatten_region(
+    tessellation: Tessellation,
+    center: IsometricPoint,
+    targets: list[IsometricPoint],
+    basis: tuple[np.ndarray, np.ndarray] | None,
+) -> list[tuple[float, float]]:
+  """Calls `tessellation.flatten_region`, passing `basis` through only for
+  `SphericalTessellation` -- `GenericTessellation.flatten_region` takes
+  no `basis` parameter at all (it has no tangent-basis concept; see its
+  own docstring), so passing one would raise `TypeError`.
+  """
+  if isinstance(tessellation, SphericalTessellation):
+    return tessellation.flatten_region(center, targets, basis)
+  return tessellation.flatten_region(center, targets)
+
+
 def flatten_frontier_to_buffers(
-    tessellation: SphericalTessellation,
+    tessellation: Tessellation,
     center: IsometricPoint,
     frontier: list[tuple[LodMeshSector, SectorAddress]],
-    basis: tuple[np.ndarray, np.ndarray],
+    basis: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[bytes, bytes, int, int]:
   """Exports a `select_frontier` result as flat (`z = 0`) renderer-ready
   buffers, centered at `center`.
@@ -128,7 +211,8 @@ def flatten_frontier_to_buffers(
     center: The point `flatten_region` centers the projection on.
     frontier: A `select_frontier` result.
     basis: The tangent basis to project onto -- see `flatten_region`'s
-      own `basis` argument.
+      own `basis` argument. Only meaningful for `SphericalTessellation`;
+      ignored (must be omitted or `None`) for any other tessellation.
 
   Returns:
     A `(positions_bytes, indices_bytes, vertex_count, face_count)` tuple,
@@ -151,7 +235,7 @@ def flatten_frontier_to_buffers(
         sector.project_onto_root_grid(corner) for corner in local_corners)
     indices.append((base_index, base_index + 1, base_index + 2))
 
-  flat_positions = tessellation.flatten_region(center, targets, basis)
+  flat_positions = _flatten_region(tessellation, center, targets, basis)
   positions_array = np.array(
       [(x, y, 0.0) for x, y in flat_positions], dtype=np.float32)
   indices_array = np.array(indices, dtype=np.uint32)
@@ -161,10 +245,10 @@ def flatten_frontier_to_buffers(
 
 
 def flatten_visible_items(
-    tessellation: SphericalTessellation,
+    tessellation: Tessellation,
     center: IsometricPoint,
-    camera_position: Sequence[float],
-    basis: tuple[np.ndarray, np.ndarray],
+    camera_position: Sequence[float] | None,
+    basis: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> list[tuple[Any, float, float]]:
   """Like `item_export.iter_visible_items`, but positions are flattened
   (via `flatten_region`) around `center` instead of in true 3D.
@@ -174,23 +258,29 @@ def flatten_visible_items(
     center: The point `flatten_region` centers the projection on.
     camera_position: The camera's `(x, y, z)` world position -- used only
       to derive the same visibility scale `item_export.iter_visible_items`
-      would use, not for positioning.
+      would use, not for positioning. May be omitted (`None`) for a
+      tessellation with no such scale concept (see `item_export.
+      _scale_from_camera`), which never actually reads it.
     basis: The tangent basis to project onto -- see `flatten_region`'s
-      own `basis` argument.
+      own `basis` argument. Only meaningful for `SphericalTessellation`;
+      ignored (must be omitted or `None`) for any other tessellation.
 
   Returns:
     A `(payload, x, y)` tuple per currently-visible item.
   """
+  nearby = set(nearby_faces(tessellation, center))
   payloads = []
   points = []
   for payload, point in item_export.iter_visible_item_points(
       tessellation, camera_position):
+    if point.grid not in nearby:
+      continue  # see `nearby_faces`'s own docstring for why
     payloads.append(payload)
     points.append(point)
   if not points:
     return []
 
-  flat_positions = tessellation.flatten_region(center, points, basis)
+  flat_positions = _flatten_region(tessellation, center, points, basis)
   return [
       (payload, x, y)
       for payload, (x, y) in zip(payloads, flat_positions)
