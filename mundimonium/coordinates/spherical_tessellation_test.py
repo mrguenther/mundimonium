@@ -179,6 +179,41 @@ def test_flatten_region_of_no_targets_returns_an_empty_list(fine_sphere):
   assert fine_sphere.flatten_region(center, []) == []
 
 
+def test_tangent_basis_varies_continuously_near_a_pole(sphere):
+  """Regression test: an earlier implementation of `_tangent_basis`
+  switched between two reference vectors at a fixed proximity threshold
+  to a pole, so two directions a fraction of a degree apart but
+  straddling that threshold got wildly different (nearly unrelated)
+  bases -- a visible jump in `flatten_region`'s orientation for a center
+  panning through that whole region. The current rotation-based
+  construction should vary smoothly instead, with no such threshold.
+  """
+  # Longitude must be nonzero: a path confined to the plane containing
+  # both of the old implementation's reference vectors ([0, 0, 1] and
+  # [1, 0, 0]) doesn't actually exhibit the jump, by coincidence -- it
+  # needs a direction with a component out of that plane to expose it.
+  longitude = math.radians(45.0)
+  previous_e_x = None
+  max_step_degrees = 0.0
+  for colatitude_degrees in np.linspace(150.0, 179.9, 30):
+    colatitude = math.radians(colatitude_degrees)
+    direction = np.array([
+        math.sin(colatitude) * math.cos(longitude),
+        math.sin(colatitude) * math.sin(longitude),
+        math.cos(colatitude),
+    ])
+    e_x, _ = sphere._tangent_basis(direction)
+    if previous_e_x is not None:
+      cos_step = np.clip(np.dot(previous_e_x, e_x), -1.0, 1.0)
+      max_step_degrees = max(
+          max_step_degrees, math.degrees(math.acos(cos_step)))
+    previous_e_x = e_x
+
+  # Consecutive `colatitude_degrees` steps are just under 1 degree apart;
+  # the basis shouldn't rotate dramatically more than that between them.
+  assert max_step_degrees < 2.0
+
+
 # ---------------------------------------------------------------------------
 # unflatten_point
 # ---------------------------------------------------------------------------
@@ -208,6 +243,104 @@ def test_unflatten_point_preserves_geodesic_distance(fine_sphere):
     recovered = fine_sphere.unflatten_point(center, x, y)
     assert fine_sphere.geodesic_distance(center, recovered) == pytest.approx(
         math.hypot(x, y), rel=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# unflatten_point_and_transport_basis
+# ---------------------------------------------------------------------------
+
+def test_unflatten_point_and_transport_basis_matches_unflatten_point(sphere):
+  center = sphere.new_point_at_coords(1.0, 1.0)
+  basis = sphere.tangent_basis_at(center)
+  new_point, _ = sphere.unflatten_point_and_transport_basis(
+      center, 0.3, 0.2, basis)
+  assert sphere.point_to_3d_position(new_point) == pytest.approx(
+      sphere.point_to_3d_position(sphere.unflatten_point(center, 0.3, 0.2)),
+      abs=1e-9)
+
+
+def test_unflatten_point_and_transport_basis_of_zero_offset_is_unchanged(
+    sphere):
+  center = sphere.new_point_at_coords(1.0, 1.0)
+  basis = sphere.tangent_basis_at(center)
+  new_point, new_basis = sphere.unflatten_point_and_transport_basis(
+      center, 0.0, 0.0, basis)
+  assert new_point is center
+  assert new_basis[0] is basis[0] and new_basis[1] is basis[1]
+
+
+def test_unflatten_point_and_transport_basis_stays_orthonormal(fine_sphere):
+  center = fine_sphere.new_point_at_coords(1.0, 1.0)
+  basis = fine_sphere.tangent_basis_at(center)
+  for _ in range(100):
+    center, basis = fine_sphere.unflatten_point_and_transport_basis(
+        center, 0.03, 0.02, basis)
+    e_x, e_y = basis
+    center_dir = fine_sphere._point_to_3d_unit(center)
+    assert np.linalg.norm(e_x) == pytest.approx(1.0, abs=1e-9)
+    assert np.linalg.norm(e_y) == pytest.approx(1.0, abs=1e-9)
+    assert np.dot(e_x, e_y) == pytest.approx(0.0, abs=1e-9)
+    assert np.dot(e_x, center_dir) == pytest.approx(0.0, abs=1e-9)
+    assert np.dot(e_y, center_dir) == pytest.approx(0.0, abs=1e-9)
+    assert np.cross(e_x, e_y) == pytest.approx(center_dir, abs=1e-9)
+
+
+def test_unflatten_point_and_transport_basis_composes_along_a_straight_line(
+    sphere):
+  """Two consecutive steps in the same direction should land on the same
+  point, with the same transported basis, as one combined step -- both
+  lie on the same single geodesic, so parallel transport along it should
+  agree regardless of how the walk is split into calls.
+  """
+  center = sphere.new_point_at_coords(1.0, 1.0)
+  basis = sphere.tangent_basis_at(center)
+
+  midpoint, mid_basis = sphere.unflatten_point_and_transport_basis(
+      center, 0.05, 0.0, basis)
+  via_two_steps, basis_via_two_steps = (
+      sphere.unflatten_point_and_transport_basis(
+          midpoint, 0.05, 0.0, mid_basis))
+  via_one_step, basis_via_one_step = (
+      sphere.unflatten_point_and_transport_basis(center, 0.10, 0.0, basis))
+
+  assert sphere.point_to_3d_position(via_two_steps) == pytest.approx(
+      sphere.point_to_3d_position(via_one_step), abs=1e-9)
+  assert basis_via_two_steps[0] == pytest.approx(
+      basis_via_one_step[0], abs=1e-9)
+  assert basis_via_two_steps[1] == pytest.approx(
+      basis_via_one_step[1], abs=1e-9)
+
+
+def test_unflatten_point_and_transport_basis_round_trips_forward_and_back(
+    fine_sphere):
+  """Regression test for spurious net rotation: walking forward along a
+  chain of geodesic steps -- through a pole, the region that used to be
+  discontinuous before `_tangent_basis`'s own fix, and where even that
+  fix's smooth-but-memoryless basis would still drift relative to the
+  direction of travel -- and then walking back along the exact same
+  steps (each one negated) should exactly recover the original point
+  and basis. Any accumulated spurious rotation would show up as a
+  mismatch here.
+  """
+  center = fine_sphere.new_point_at_coords(
+      math.radians(155.0), math.radians(45.0))
+  basis = fine_sphere.tangent_basis_at(center)
+  x, y = 0.03, 0.02
+
+  current_center, current_basis = center, basis
+  for _ in range(40):  # far enough to cross the pole
+    current_center, current_basis = (
+        fine_sphere.unflatten_point_and_transport_basis(
+            current_center, x, y, current_basis))
+  for _ in range(40):  # walk the same steps back, in reverse
+    current_center, current_basis = (
+        fine_sphere.unflatten_point_and_transport_basis(
+            current_center, -x, -y, current_basis))
+
+  assert fine_sphere.point_to_3d_position(current_center) == pytest.approx(
+      fine_sphere.point_to_3d_position(center), abs=1e-6)
+  assert current_basis[0] == pytest.approx(basis[0], abs=1e-6)
+  assert current_basis[1] == pytest.approx(basis[1], abs=1e-6)
 
 
 # ---------------------------------------------------------------------------

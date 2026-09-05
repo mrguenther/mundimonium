@@ -6,6 +6,7 @@ import {
 } from './scene/CameraController.js';
 import { buildGeometry, buildShadedMesh, buildWireframe } from './scene/MeshLoader.js';
 import { buildItemSprites } from './scene/ItemLoader.js';
+import { buildFaceIndexLabels } from './scene/DebugFaceLabels.js'; // DEBUG ONLY -- see its own docstring
 
 const statusElement = document.getElementById('status');
 
@@ -83,6 +84,7 @@ async function main() {
   let wireframe; // debug overlay -- see `MeshLoader.buildWireframe`'s docstring
   let lastSectors = [];
   const itemGroup = new THREE.Group();
+  const debugLabelGroup = new THREE.Group(); // DEBUG ONLY -- see DebugFaceLabels.js
 
   /**
    * Swaps `mesh`'s geometry (disposing the old one) and keeps `wireframe`
@@ -92,12 +94,19 @@ async function main() {
    * of sync with what it's supposed to be outlining.
    *
    * @param {THREE.BufferGeometry} newGeometry
+   * @param {{ face: number, path: number[][] }[] | undefined} sectors -
+   *   DEBUG ONLY -- forwarded to `buildFaceIndexLabels`, see its docstring.
    */
-  function updateMeshGeometry(newGeometry) {
+  function updateMeshGeometry(newGeometry, sectors) {
     mesh.geometry.dispose();
     mesh.geometry = newGeometry;
     wireframe.geometry.dispose();
     wireframe.geometry = new THREE.WireframeGeometry(newGeometry);
+
+    debugLabelGroup.clear(); // DEBUG ONLY
+    for (const label of buildFaceIndexLabels(newGeometry, sectors)) {
+      debugLabelGroup.add(label);
+    }
   }
 
   // True exactly while `DEBUG_TOGGLE_GENERIC_KEY`'s demo mesh is showing --
@@ -113,14 +122,20 @@ async function main() {
   let flatController = null;
   let flatModeCameraPosition = null;
 
-  // The server's own resolved center for the flattened view currently
-  // showing -- `null` until the first `getFlatMesh`/`getFlatItems`
-  // response arrives after entering flat mode. Once set, every further
-  // refresh re-centers on it (offset by however far `flatController`'s
-  // camera has panned since), rather than reusing the increasingly stale
-  // `flatModeCameraPosition`, so the projection itself updates in real
-  // time as you pan instead of just sliding a frozen snapshot around.
+  // The server's own resolved center/tangent-basis for the flattened
+  // view currently showing -- both `null` until the first `getFlatMesh`/
+  // `getFlatItems` response arrives after entering flat mode. Once set,
+  // every further refresh re-centers on `flatCenter` (offset by however
+  // far `flatController`'s camera has panned since), rather than reusing
+  // the increasingly stale `flatModeCameraPosition`, so the projection
+  // itself updates in real time as you pan instead of just sliding a
+  // frozen snapshot around. `flatBasis` is carried forward the same way
+  // so the server can parallel-transport it (`SphericalTessellation
+  // .unflatten_point_and_transport_basis`) rather than independently
+  // recomputing an orientation at each new center, which would otherwise
+  // slowly rotate the view relative to the path actually panned.
   let flatCenter = null;
+  let flatBasis = null;
 
   // `switchToFlatMode` awaits a round-trip before `orbitController` is
   // disabled, so a second drag/zoom in that gap could otherwise trigger a
@@ -134,7 +149,7 @@ async function main() {
       cameraPosition: cameraPositionArray(orbitController.camera),
     });
     lastSectors = meshData.sectors;
-    updateMeshGeometry(buildGeometry(meshData));
+    updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
     return meshData;
   }
 
@@ -151,10 +166,10 @@ async function main() {
 
   /**
    * The request fields that tell the server to re-center exactly on
-   * wherever the flat view currently is, once a center is already known
-   * (every call after flat mode's first) -- `{}` before that, so the
-   * request falls back to deriving a center from `flatModeCameraPosition`
-   * instead (see `server.py`'s own `_resolve_flat_center`).
+   * wherever the flat view currently is, once a center/basis are already
+   * known (every call after flat mode's first) -- `{}` before that, so
+   * the request falls back to deriving both from `flatModeCameraPosition`
+   * instead (see `server.py`'s own `_resolve_flat_center_and_basis`).
    */
   function flatRecenterRequestFields() {
     if (!flatCenter) {
@@ -162,6 +177,7 @@ async function main() {
     }
     return {
       center: flatCenter,
+      basis: flatBasis,
       panOffset: [
         flatController.camera.position.x, flatController.camera.position.y,
       ],
@@ -175,17 +191,19 @@ async function main() {
     });
     lastSectors = meshData.sectors;
     flatCenter = meshData.center;
-    updateMeshGeometry(buildGeometry(meshData));
+    flatBasis = meshData.basis;
+    updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
     flatController.recenter();
     return meshData;
   }
 
   async function refreshFlatItems() {
-    const { items, center } = await window.mundimonium.getFlatItems({
+    const { items, center, basis } = await window.mundimonium.getFlatItems({
       ...TESSELLATION, cameraPosition: flatModeCameraPosition,
       ...flatRecenterRequestFields(),
     });
     flatCenter = center;
+    flatBasis = basis;
     itemGroup.clear();
     for (const sprite of buildItemSprites(items)) {
       itemGroup.add(sprite);
@@ -200,7 +218,9 @@ async function main() {
     switchingModes = true;
     try {
       flatModeCameraPosition = cameraPositionArray(orbitController.camera);
-      flatCenter = null; // fresh entry -- derive the center from 3D, not a stale prior visit's
+      // Fresh entry -- derive center/basis from 3D, not a stale prior visit's.
+      flatCenter = null;
+      flatBasis = null;
       const halfHeight = Math.max(
           altitudeAboveSurface(flatModeCameraPosition), 0.01);
 
@@ -252,6 +272,7 @@ async function main() {
     flatController = null;
     flatModeCameraPosition = null;
     flatCenter = null;
+    flatBasis = null;
     orbitController.setEnabled(true);
     sceneManager.setActiveController(orbitController);
     refreshLodMesh().catch((error) => {
@@ -278,6 +299,7 @@ async function main() {
       sceneManager.addToScene(light);
     }
     sceneManager.addToScene(itemGroup);
+    sceneManager.addToScene(debugLabelGroup); // DEBUG ONLY
     await refreshItems();
     setStatus('');
   } catch (error) {
@@ -336,13 +358,16 @@ async function main() {
         const meshData = await window.mundimonium.getLodMesh(
             { ...TESSELLATION, cameraPosition });
         lastSectors = meshData.sectors;
-        updateMeshGeometry(buildGeometry(meshData));
+        updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
         viewingGenericDemo = false;
         await refreshItems();
       } else {
         const meshData = await window.mundimonium.getMesh(GENERIC_TESSELLATION);
         lastSectors = []; // subdivide/LOD refresh isn't supported here
-        updateMeshGeometry(buildGeometry(meshData));
+        // No `sectors` in a plain `getMesh` response -- no per-face
+        // addresses to label, so `updateMeshGeometry` just clears any
+        // debug labels left over from the spherical world.
+        updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
         viewingGenericDemo = true;
         const { items } = await window.mundimonium.getItems(
             { ...GENERIC_TESSELLATION, cameraPosition });

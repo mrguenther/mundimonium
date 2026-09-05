@@ -45,7 +45,8 @@ def test_flatten_frontier_buffer_lengths_and_counts_agree():
   frontier = select_frontier(tess, camera_position)
 
   positions_bytes, indices_bytes, vertex_count, face_count = (
-      flatten_frontier_to_buffers(tess, center, frontier))
+      flatten_frontier_to_buffers(
+          tess, center, frontier, tess.tangent_basis_at(center)))
 
   assert face_count == len(frontier)
   assert vertex_count == 3 * len(frontier)
@@ -60,7 +61,7 @@ def test_flatten_frontier_positions_have_zero_z():
   frontier = select_frontier(tess, camera_position)
 
   positions_bytes, _, _, _ = flatten_frontier_to_buffers(
-      tess, center, frontier)
+      tess, center, frontier, tess.tangent_basis_at(center))
   positions = np.frombuffer(positions_bytes, dtype=np.float32).reshape(-1, 3)
 
   np.testing.assert_array_equal(positions[:, 2], 0.0)
@@ -79,7 +80,7 @@ def test_flatten_frontier_positions_preserve_distance_to_center():
   frontier = select_frontier(tess, camera_position)
 
   positions_bytes, _, _, _ = flatten_frontier_to_buffers(
-      tess, center, frontier)
+      tess, center, frontier, tess.tangent_basis_at(center))
   positions = np.frombuffer(positions_bytes, dtype=np.float32).reshape(-1, 3)
 
   index = 0
@@ -106,10 +107,13 @@ def test_flatten_visible_items_returns_flattened_positions():
   camera_position = [0.0, 0.0, 10.0]
   center = center_point_from_camera(tess, camera_position)
 
-  [(payload, x, y)] = flatten_visible_items(tess, center, camera_position)
+  basis = tess.tangent_basis_at(center)
+  [(payload, x, y)] = flatten_visible_items(
+      tess, center, camera_position, basis)
 
   assert payload == {'kind': 'city'}
-  [(expected_x, expected_y)] = tess.flatten_region(center, [item_point])
+  [(expected_x, expected_y)] = tess.flatten_region(
+      center, [item_point], basis)
   assert (x, y) == pytest.approx((expected_x, expected_y), rel=1e-6)
 
 
@@ -118,4 +122,5 @@ def test_flatten_visible_items_returns_an_empty_list_with_no_items():
   camera_position = [0.0, 0.0, 10.0]
   center = center_point_from_camera(tess, camera_position)
 
-  assert flatten_visible_items(tess, center, camera_position) == []
+  assert flatten_visible_items(
+      tess, center, camera_position, tess.tangent_basis_at(center)) == []

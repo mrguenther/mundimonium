@@ -99,6 +99,7 @@ function registerIpcHandlers(pythonBridge, getWindows) {
       auto_subdivide: request.autoSubdivide,
       center: request.center,
       pan_offset: request.panOffset,
+      basis: request.basis,
     });
 
     const positions = new Float32Array(copyToAlignedArrayBuffer(
@@ -107,6 +108,7 @@ function registerIpcHandlers(pythonBridge, getWindows) {
         body, header.positions_byte_length, header.indices_byte_length));
     return {
       positions, indices, sectors: header.sectors, center: header.center,
+      basis: header.basis,
     };
   });
 
@@ -130,8 +132,9 @@ function registerIpcHandlers(pythonBridge, getWindows) {
       camera_position: request.cameraPosition,
       center: request.center,
       pan_offset: request.panOffset,
+      basis: request.basis,
     });
-    return { items: header.items, center: header.center };
+    return { items: header.items, center: header.center, basis: header.basis };
   });
 
   pythonBridge.on('python:status', (status) => {

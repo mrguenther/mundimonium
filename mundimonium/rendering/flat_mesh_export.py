@@ -77,10 +77,42 @@ def center_from_json(
   return IsometricPoint(face, data['b'], data['s'])
 
 
+def basis_to_json(basis: tuple[np.ndarray, np.ndarray]) -> dict:
+  """A JSON-safe encoding of a tangent basis (see `SphericalTessellation
+  .tangent_basis_at`/`unflatten_point_and_transport_basis`), for
+  round-tripping through a response and back into a later request's own
+  `basis_from_json` call.
+
+  Args:
+    basis: An `(e_x, e_y)` tangent basis.
+
+  Returns:
+    A `{'e_x': [x, y, z], 'e_y': [x, y, z]}` dict.
+  """
+  e_x, e_y = basis
+  return {'e_x': [float(c) for c in e_x], 'e_y': [float(c) for c in e_y]}
+
+
+def basis_from_json(data: dict) -> tuple[np.ndarray, np.ndarray]:
+  """Inverse of `basis_to_json`.
+
+  Args:
+    data: A dict as produced by `basis_to_json`.
+
+  Returns:
+    The decoded `(e_x, e_y)` tangent basis.
+  """
+  return (
+      np.array(data['e_x'], dtype=np.float64),
+      np.array(data['e_y'], dtype=np.float64),
+  )
+
+
 def flatten_frontier_to_buffers(
     tessellation: SphericalTessellation,
     center: IsometricPoint,
     frontier: list[tuple[LodMeshSector, SectorAddress]],
+    basis: tuple[np.ndarray, np.ndarray],
 ) -> tuple[bytes, bytes, int, int]:
   """Exports a `select_frontier` result as flat (`z = 0`) renderer-ready
   buffers, centered at `center`.
@@ -95,6 +127,8 @@ def flatten_frontier_to_buffers(
     tessellation: The `frontier`'s owning tessellation.
     center: The point `flatten_region` centers the projection on.
     frontier: A `select_frontier` result.
+    basis: The tangent basis to project onto -- see `flatten_region`'s
+      own `basis` argument.
 
   Returns:
     A `(positions_bytes, indices_bytes, vertex_count, face_count)` tuple,
@@ -117,7 +151,7 @@ def flatten_frontier_to_buffers(
         sector.project_onto_root_grid(corner) for corner in local_corners)
     indices.append((base_index, base_index + 1, base_index + 2))
 
-  flat_positions = tessellation.flatten_region(center, targets)
+  flat_positions = tessellation.flatten_region(center, targets, basis)
   positions_array = np.array(
       [(x, y, 0.0) for x, y in flat_positions], dtype=np.float32)
   indices_array = np.array(indices, dtype=np.uint32)
@@ -130,6 +164,7 @@ def flatten_visible_items(
     tessellation: SphericalTessellation,
     center: IsometricPoint,
     camera_position: Sequence[float],
+    basis: tuple[np.ndarray, np.ndarray],
 ) -> list[tuple[Any, float, float]]:
   """Like `item_export.iter_visible_items`, but positions are flattened
   (via `flatten_region`) around `center` instead of in true 3D.
@@ -140,6 +175,8 @@ def flatten_visible_items(
     camera_position: The camera's `(x, y, z)` world position -- used only
       to derive the same visibility scale `item_export.iter_visible_items`
       would use, not for positioning.
+    basis: The tangent basis to project onto -- see `flatten_region`'s
+      own `basis` argument.
 
   Returns:
     A `(payload, x, y)` tuple per currently-visible item.
@@ -153,7 +190,7 @@ def flatten_visible_items(
   if not points:
     return []
 
-  flat_positions = tessellation.flatten_region(center, points)
+  flat_positions = tessellation.flatten_region(center, points, basis)
   return [
       (payload, x, y)
       for payload, (x, y) in zip(payloads, flat_positions)
