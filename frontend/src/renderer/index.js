@@ -84,6 +84,75 @@ function altitudeAboveSurface(cameraPosition) {
   return Math.hypot(x, y, z) - TESSELLATION.radius;
 }
 
+/**
+ * Whether `flatController`'s camera has panned since its projection was
+ * last centered -- `FlatMapCameraController.recenter()` always resets
+ * the camera back to exactly `(0, 0)`, so a nonzero position here can
+ * only come from real panning since then, never from zooming alone (an
+ * orthographic `OrbitControls`' zoom only changes `camera.zoom`, never
+ * `camera.position`). The flattened geometry depends only on where the
+ * view is centered, not how far zoomed in/out it is, so this is exactly
+ * the condition under which a fresh reflattening request is worth it.
+ *
+ * @param {FlatMapCameraController} flatController
+ * @returns {boolean}
+ */
+function hasPanned(flatController) {
+  const { x, y } = flatController.camera.position;
+  return Math.hypot(x, y) > 1e-9;
+}
+
+/**
+ * Wraps `refresh` (a flat view's paired mesh+items reflattening round-
+ * trip) so that calling the returned function while a previous call is
+ * still in flight never starts a second, overlapping request -- it just
+ * remembers that another refresh is needed and runs exactly one more
+ * once the current one settles, reflecting whatever the view's latest
+ * state is by then, rather than the (possibly already stale) state that
+ * requested it. At most one such follow-up is ever remembered (`queued`
+ * is a single flag, not a list) -- a burst of several changes while a
+ * request is in flight still only ever produces one more request after
+ * it, using whatever is latest by the time that request actually goes
+ * out.
+ *
+ * Without this, panning fast enough to fire the debounced `onChange`
+ * again before a round-trip completes launches a second, redundant
+ * request recomputing the same geometry -- wasted work, and slower to
+ * catch up overall, since two round-trips end up serialized end-to-end
+ * (the Python subprocess itself only ever handles one request at a time)
+ * instead of the second one being skipped in favor of a single fresh
+ * one afterward.
+ *
+ * @param {() => Promise<void>} refresh
+ * @param {(error: Error) => void} onError
+ * @returns {() => void} Requests a refresh.
+ */
+function serializeRefresh(refresh, onError) {
+  let inFlight = false;
+  let queued = false;
+
+  async function run() {
+    if (inFlight) {
+      queued = true;
+      return;
+    }
+    inFlight = true;
+    try {
+      await refresh();
+    } catch (error) {
+      onError(error);
+    } finally {
+      inFlight = false;
+      if (queued) {
+        queued = false;
+        run();
+      }
+    }
+  }
+
+  return run;
+}
+
 async function main() {
   const sceneManager = new SceneManager(document.body);
   const orbitController = new OrbitCameraController(
@@ -259,6 +328,12 @@ async function main() {
     flatController.recenter();
   }
 
+  const scheduleFlatRefresh = serializeRefresh(
+      () => flatController
+          ? Promise.all([refreshFlatMesh(), refreshFlatItems()])
+          : Promise.resolve(),
+      (error) => setStatus(`Failed to update flat view: ${error.message}`));
+
   async function switchToFlatMode() {
     if (switchingModes) {
       return;
@@ -286,13 +361,15 @@ async function main() {
           switchToOrbitMode();
           return;
         }
+        if (!hasPanned(flatController)) {
+          return; // zoom only -- the flattened geometry hasn't changed
+        }
         // Re-centers the projection on wherever the view now is, exactly
         // (see `flatRecenterRequestFields`) -- without this, panning
         // would just slide a frozen snapshot around instead of updating
-        // it in real time.
-        Promise.all([refreshFlatMesh(), refreshFlatItems()]).catch((error) => {
-          setStatus(`Failed to update flat view: ${error.message}`);
-        });
+        // it in real time. Serialized via `scheduleFlatRefresh` so a
+        // fast pan can never have two of these requests in flight at once.
+        scheduleFlatRefresh();
       });
     } finally {
       switchingModes = false;
@@ -396,6 +473,12 @@ async function main() {
     }
   }
 
+  const scheduleGenericFlatRefresh = serializeRefresh(
+      () => flatController
+          ? Promise.all([refreshGenericFlatMesh(), refreshGenericFlatItems()])
+          : Promise.resolve(),
+      (error) => setStatus(`Failed to update flat view: ${error.message}`));
+
   async function switchToGenericFlatMode() {
     if (switchingModes) {
       return;
@@ -428,14 +511,16 @@ async function main() {
           });
           return;
         }
+        if (!hasPanned(flatController)) {
+          return; // zoom only -- the flattened geometry hasn't changed
+        }
         // Re-centers the projection on wherever the view now is, exactly
         // (see `genericFlatRecenterRequestFields`) -- without this,
         // panning would just slide a frozen snapshot around instead of
-        // updating it in real time.
-        Promise.all([refreshGenericFlatMesh(), refreshGenericFlatItems()])
-            .catch((error) => {
-              setStatus(`Failed to update flat view: ${error.message}`);
-            });
+        // updating it in real time. Serialized via `scheduleGenericFlat
+        // Refresh` so a fast pan can never have two of these requests in
+        // flight at once.
+        scheduleGenericFlatRefresh();
       });
     } finally {
       switchingModes = false;

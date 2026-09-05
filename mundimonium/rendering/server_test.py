@@ -401,6 +401,28 @@ def test_get_flat_mesh_with_pan_offset_recenters_via_unflatten_point_for_generic
   assert actual_center.s == pytest.approx(expected_center.s)
 
 
+def test_get_flat_mesh_with_null_orientation_on_first_pan_does_not_crash():
+  # Regression test: the real frontend (unlike this file's other tests)
+  # always sends `pan_offset` *and* an explicit `orientation` field from
+  # its very first generic flat-mode request onward (see `index.js`'s
+  # `genericFlatRecenterRequestFields`, which -- unlike the spherical
+  # flat mode's own `flatRecenterRequestFields` -- has no "omit these
+  # fields entirely on the first call" branch) -- with `orientation`
+  # explicitly `None` (JSON `null`) that first time, since there is no
+  # previous orientation yet to continue from. A `'orientation' in
+  # header` check treats that null value the same as a real one and
+  # crashes trying to decode it; the fix checks the value itself.
+  _tessellation, center = _generic_demo_center()
+  header = {
+      'type': 'get_flat_mesh', 'id': '11z', 'tessellation': 'generic',
+      'center': center, 'pan_offset': [0.0, 0.0], 'orientation': None,
+  }
+  response_header, _response_body = dispatch(header, b'')
+  assert response_header['type'] == 'flat_mesh'
+  assert {'face', 'b', 's'} <= response_header['center'].keys()
+  assert {'cos', 'sin'} <= response_header['orientation'].keys()
+
+
 def test_get_flat_mesh_with_pan_offset_transports_orientation_for_generic():
   tessellation, center = _generic_demo_center()
   entry_header = {
