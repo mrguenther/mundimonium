@@ -69,17 +69,33 @@ contextBridge.exposeInMainWorld('mundimonium', {
    * this tessellation's projection is only numerically valid within a
    * bounded radius of wherever it's currently centered.
    *
+   * `tessellation: 'hyperbolic'` also supports a second, `overview: true`
+   * sub-mode -- a wide, bounded Poincare-disk view (this kind's analogue
+   * of the other two kinds' 3D view) rather than the exact local
+   * close-up projection `overview: false`/omitted gives. Both sub-modes
+   * share the exact same `center`/`panOffset`-based continuation
+   * contract described above (each response's own `center`/
+   * `stablePanRadius` feeds the next request the same way); they differ
+   * only in which server-side projection/frontier renders them, not in
+   * the wire shape. `center`/`stablePanRadius` values from one sub-mode
+   * are valid `center`s to enter the *other* sub-mode with (e.g.
+   * resuming close-up at wherever the view was panned to within the
+   * overview) -- but a `stablePanRadius` itself is only meaningful
+   * against its own sub-mode's own camera position, never the other's
+   * (the two are measured in different, nonlinearly related units).
+   *
    * @param {{ tessellation: string, radius?: number, frequency?: number,
    *   cameraPosition?: [number, number, number], autoSubdivide?: boolean,
    *   center?: { face: number, b: number, s: number },
    *   basis?: { e_x: [number, number, number], e_y: [number, number, number] },
    *   orientation?: { cos: number, sin: number },
-   *   panOffset?: [number, number] }} request - `cameraPosition` is only
-   *   used (and required) for `tessellation: 'spherical'`'s first call, to
-   *   resolve an initial `center`. `'generic'` always supplies `center`
-   *   directly instead (its surface-following camera already knows its
-   *   own exact position), so `cameraPosition` is never needed there.
-   *   `'hyperbolic'` needs neither: its first call omits `center` too,
+   *   panOffset?: [number, number], overview?: boolean }} request -
+   *   `cameraPosition` is only used (and required) for `tessellation:
+   *   'spherical'`'s first call, to resolve an initial `center`.
+   *   `'generic'` always supplies `center` directly instead (its
+   *   surface-following camera already knows its own exact position), so
+   *   `cameraPosition` is never needed there. `'hyperbolic'` needs
+   *   neither: its first call (in either sub-mode) omits `center` too,
    *   letting the server start from wherever its own reference point
    *   already is (this tessellation has no 3D position to derive one
    *   from in the first place).
@@ -97,7 +113,7 @@ contextBridge.exposeInMainWorld('mundimonium', {
    *   mode is exited. `orientation` is only present for `tessellation:
    *   'generic'`, and only once resolved via a `panOffset` (nothing to
    *   report on the first, `panOffset`-less call). `stablePanRadius` is
-   *   only present for `tessellation: 'hyperbolic'`.
+   *   only present for `tessellation: 'hyperbolic'` (either sub-mode).
    */
   getFlatMesh: (request) => ipcRenderer.invoke('mesh:getFlat', request),
 

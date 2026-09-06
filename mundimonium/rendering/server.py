@@ -15,6 +15,7 @@ from mundimonium.rendering.mesh_export import tessellation_to_buffers
 from mundimonium.rendering.protocol import read_frame, write_frame
 
 from typing import BinaryIO, Callable
+import math
 import sys
 import traceback
 
@@ -298,29 +299,39 @@ _HYPERBOLIC_PAN_SAFETY_FACTOR = 0.8
 
 def _resolve_hyperbolic_flat_center(
     tessellation: HyperbolicTessellation, header: dict,
+    unflatten_fn: Callable[[IsometricPoint, float, float], IsometricPoint],
 ) -> IsometricPoint:
   """The mesh point a hyperbolic `get_flat_mesh` request should center its
   projection on.
 
-  If `header` carries no `center` at all, this is flat mode's very first
-  request -- there's no 3D position to derive a starting point from (this
-  tessellation has no 3D embedding), so it starts wherever the
-  tessellation's own reference point already is. Otherwise decodes
-  `header['center']` and, if `header` also carries `pan_offset`, advances
-  it via `HyperbolicTessellation.unflatten_point`.
+  If `header` carries no `center` at all, this is the request's very
+  first call -- either sub-mode's (close-up and overview each have a
+  genuine "nothing to derive a start from yet" first call, since this
+  tessellation has no 3D embedding to resolve one from otherwise) --
+  starting wherever the tessellation's own reference point already is.
+  Otherwise decodes `header['center']` and, if `header` also carries
+  `pan_offset`, advances it via `unflatten_fn` -- `HyperbolicTessellation
+  .unflatten_point` for close-up (true-hyperbolic-distance log-map
+  units) or `.unflatten_relative_poincare` for overview (bounded
+  Poincare-disk-radius units); the caller picks whichever matches its own
+  sub-mode's rendering.
 
   Whichever way `center` was resolved, always finishes by recentering the
   tessellation there before returning it. This does double duty: it
   refreshes `stable_faces`/`stable_radius` around the point about to be
-  rendered (used both for the render frontier and for the response's own
-  `stable_pan_radius`), and it establishes the exact reference-frame
-  convention `flatten_region`'s own `(x, y)` output depends on -- see
-  `HyperbolicTessellation.unflatten_point`'s docstring for why this
-  matters, not just for precision.
+  rendered (used both for the close-up render frontier and for the
+  response's own `stable_pan_radius`, in either sub-mode), and it
+  establishes the exact reference-frame convention `flatten_region`'s own
+  `(x, y)` output depends on -- see `HyperbolicTessellation.
+  unflatten_point`'s docstring for why this matters, not just for
+  precision.
 
   Args:
     tessellation: The tessellation to resolve a center on.
     header: The request header.
+    unflatten_fn: Resolves `center` + `pan_offset` into the new center --
+      pass the sub-mode-appropriate `unflatten_point`/`unflatten_relative_
+      poincare` bound method.
 
   Returns:
     The resolved center, already the tessellation's current reference
@@ -335,9 +346,105 @@ def _resolve_hyperbolic_flat_center(
       center = old_center
     else:
       pan_x, pan_y = header['pan_offset']
-      center = tessellation.unflatten_point(old_center, pan_x, pan_y)
+      center = unflatten_fn(old_center, pan_x, pan_y)
   tessellation.recenter(center)
   return center
+
+
+# How many combinatorial hops out from its own center the "overview" mode
+# renders -- the user's own suggested "10+ faces" starting point. Measured
+# empirically (a fresh `HyperbolicTessellation()`, i.e. `order=7`) at 742
+# faces for 10 hops, 1816 for 12 -- comfortably under
+# `_HYPERBOLIC_OVERVIEW_MAX_FACES` below, so this is a real, checked
+# value rather than a blind guess, though still worth revisiting once
+# there's a live view to eyeball the framing against.
+_HYPERBOLIC_OVERVIEW_HOPS = 10
+
+# Safety cap on `_HYPERBOLIC_OVERVIEW_HOPS`'s own growth: hyperbolic
+# tilings grow face count with hop count exponentially, so a much higher
+# `order` (or a future, larger hop count) could otherwise produce an
+# unreasonably large one-shot response. Stops `faces_within_hops` early
+# rather than letting it run away.
+_HYPERBOLIC_OVERVIEW_MAX_FACES = 5000
+
+
+def _handle_get_hyperbolic_overview_mesh(header: dict) -> tuple[dict, bytes]:
+  """Handles a `get_flat_mesh` request with `tessellation: 'hyperbolic'`
+  and `overview: true` -- a wide, bounded Poincare-disk view of however
+  much of the mesh is reachable within `_HYPERBOLIC_OVERVIEW_HOPS` hops
+  of `header`'s resolved center, standing in for what would be the 3D
+  view for the other two tessellation kinds.
+
+  Positioned via `HyperbolicTessellation.relative_poincare` rather than
+  `flatten_region` -- bounded, disk-shaped coordinates (so the result
+  actually looks like a circle), reference-frame-relative the same way
+  `flatten_region`'s own output is (unlike a seed-anchored projection,
+  which would lose precision the farther the reference has moved from
+  the seed over a session of panning). The render frontier itself
+  (`faces_within_hops`) is deliberately much wider than the numerically-
+  trusted `stable_faces` region panning is clamped to below -- the disk
+  still looks visually full even though only a smaller window within it
+  is trusted enough to pan into directly, since that window re-centers
+  (and therefore moves) with every pan.
+
+  Live and pan-driven exactly like close-up mode: the response includes
+  `center` and `stable_pan_radius` for the caller to continue from,
+  exactly as close-up's own hyperbolic branch does (see `stable_pan_
+  radius`'s own comment below for why its *units* differ from close-up's).
+
+  Args:
+    header: The request header. Must include `tessellation: 'hyperbolic'`
+      and `overview: true`; may include `center`/`pan_offset` (see
+      `_resolve_hyperbolic_flat_center`).
+
+  Returns:
+    A `(response_header, response_body)` pair -- a `flat_mesh` response
+    shaped like every other one (`vertex_count`, `face_count`,
+    `positions_byte_length`, `indices_byte_length`, `sectors`, `center`,
+    `stable_pan_radius`), but with `z` always `0.0` and positions bounded
+    within the Poincare disk.
+  """
+  tessellation = _get_hyperbolic_demo_tessellation()
+  center = _resolve_hyperbolic_flat_center(
+      tessellation, header, tessellation.unflatten_relative_poincare)
+  faces = tessellation.faces_within_hops(
+      center.grid, _HYPERBOLIC_OVERVIEW_HOPS, _HYPERBOLIC_OVERVIEW_MAX_FACES)
+  positions, indices, vertex_count, face_count = (
+      flat_mesh_export.poincare_frontier_to_buffers(tessellation, faces))
+  # Converts the trusted region's hyperbolic-distance radius
+  # (`stable_radius`) to the corresponding *Poincare-disk* radius, via
+  # the same `tanh(d / 2)` relationship `unflatten_point`/`flatten_
+  # region` already use internally -- `stable_pan_radius` must be in the
+  # same units as this sub-mode's own rendered positions/camera (bounded
+  # Poincare-disk radius), unlike close-up's own `stable_pan_radius`
+  # (a raw hyperbolic distance, correct for its unbounded log-map units).
+  #
+  # The safety factor is applied *after* this conversion, not before:
+  # `tanh` saturates toward 1 as distance grows, so scaling the
+  # pre-conversion distance (`tanh(factor * stable_radius / 2)`) would
+  # let the safety margin vanish for a large `stable_radius` (approaching
+  # the true, un-margined edge as `stable_radius -> infinity`), whereas
+  # scaling the post-conversion Poincare radius keeps the margin bounded
+  # at exactly `factor` regardless of scale.
+  stable_pan_radius = (
+      math.tanh(tessellation.stable_radius / 2.0)
+      * _HYPERBOLIC_PAN_SAFETY_FACTOR)
+  response_header = {
+      'type': 'flat_mesh',
+      'id': header.get('id'),
+      'vertex_count': vertex_count,
+      'face_count': face_count,
+      'positions_byte_length': len(positions),
+      'indices_byte_length': len(indices),
+      'sectors': [
+          lod_mesh_export.SectorAddress(
+              tessellation.index_of_face(face)).to_json()
+          for face in faces
+      ],
+      'center': flat_mesh_export.center_to_json(tessellation, center),
+      'stable_pan_radius': stable_pan_radius,
+  }
+  return response_header, positions + indices
 
 
 def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
@@ -370,12 +477,18 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
 
       For `'hyperbolic'`: `center` (a `{face, b, s}` referring to the
       fixed demo tessellation) and `pan_offset`, once a previous response
-      has provided a `center` to continue from (see `_resolve_hyperbolic_
-      flat_center`); both absent on flat mode's very first request. No
-      `camera_position`/`basis`/`orientation`: this tessellation has no 3D
-      embedding at all (it's never anything but flat), and no orientation-
-      continuity concept of its own -- see `HyperbolicTessellation.
-      unflatten_point`'s docstring for why none is needed here.
+      (either sub-mode's) has provided a `center` to continue from (see
+      `_resolve_hyperbolic_flat_center`); both absent on flat mode's very
+      first request, in either sub-mode. No `camera_position`/`basis`/
+      `orientation`: this tessellation has no 3D embedding at all (it's
+      never anything but flat), and no orientation-continuity concept of
+      its own -- see `HyperbolicTessellation.unflatten_point`'s docstring
+      for why none is needed here. `overview: true` requests the "zoomed
+      out" sub-mode instead -- a wide, bounded Poincare-disk view handled
+      entirely separately (see `_handle_get_hyperbolic_overview_mesh`),
+      but sharing this same `center`/`pan_offset`-based continuation
+      convention (just resolved via a different `unflatten_*` method
+      internally, since the two sub-modes render in different units).
 
   Returns:
     A `(response_header, response_body)` pair -- a `flat_mesh` response,
@@ -389,16 +502,23 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
     camera at, if it exits flat mode, wherever the view has actually
     panned to by then; (`'generic'` only, once resolved via a
     `pan_offset`) `orientation` (`orientation_to_json`-encoded); and
-    (`'hyperbolic'` only) `stable_pan_radius` (a float) -- the caller
-    should keep the flat camera's own pan distance from its last-
-    resolved center under this value, so a pan can never wander outside
-    the region this response's own geometry actually covers (see
-    `_HYPERBOLIC_PAN_SAFETY_FACTOR`).
+    (`'hyperbolic'` only, either sub-mode) `stable_pan_radius` (a float)
+    -- the caller should keep the flat camera's own pan distance from its
+    last-resolved center under this value, so a pan can never wander
+    outside the region this response's own geometry actually covers (see
+    `_HYPERBOLIC_PAN_SAFETY_FACTOR`). Close-up's `stable_pan_radius` is a
+    raw hyperbolic distance; overview's is a Poincare-disk radius (see
+    `_handle_get_hyperbolic_overview_mesh`) -- the two are not directly
+    comparable, each is only meaningful against its own sub-mode's own
+    camera position.
 
   Raises:
     ValueError: If `header["tessellation"]` isn't a supported kind.
   """
   tessellation_kind = header.get('tessellation')
+  if tessellation_kind == 'hyperbolic' and header.get('overview', False):
+    return _handle_get_hyperbolic_overview_mesh(header)
+
   center_position = None
   orientation_out = None
   stable_pan_radius = None
@@ -416,7 +536,7 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
     # it exits, rather than the stale pre-entry position.
     center_position = tessellation.point_to_3d_position(center)
     nearby = flat_mesh_export.nearby_faces(tessellation, center)
-    face_indices = [tessellation.faces.index(face) for face in nearby]
+    face_indices = [tessellation.index_of_face(face) for face in nearby]
     frontier = lod_mesh_export.select_frontier(
         tessellation, center_position,
         auto_subdivide=header.get('auto_subdivide', False),
@@ -430,12 +550,13 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
     # tree in active use, so each nearby top-level face is its own,
     # un-subdivided sector.
     frontier = [
-        (face, lod_mesh_export.SectorAddress(tessellation.faces.index(face)))
+        (face, lod_mesh_export.SectorAddress(tessellation.index_of_face(face)))
         for face in flat_mesh_export.nearby_faces(tessellation, center)
     ]
   elif tessellation_kind == 'hyperbolic':
     tessellation = _get_hyperbolic_demo_tessellation()
-    center = _resolve_hyperbolic_flat_center(tessellation, header)
+    center = _resolve_hyperbolic_flat_center(
+        tessellation, header, tessellation.unflatten_point)
     basis = None
     stable_pan_radius = (
         tessellation.stable_radius * _HYPERBOLIC_PAN_SAFETY_FACTOR)
@@ -443,7 +564,7 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
     # this mesh has no LOD tree in active use either. `nearby_faces`'s own
     # hyperbolic branch already returns exactly `stable_faces`.
     frontier = [
-        (face, lod_mesh_export.SectorAddress(tessellation.faces.index(face)))
+        (face, lod_mesh_export.SectorAddress(tessellation.index_of_face(face)))
         for face in flat_mesh_export.nearby_faces(tessellation, center)
     ]
   else:

@@ -135,6 +135,12 @@ def test_registering_the_same_face_twice_is_a_noop(icosahedron):
   assert len(tess._faces) == before
 
 
+def test_index_of_face_matches_the_linear_scan(icosahedron):
+  tess, _verts, faces = icosahedron
+  for face in faces:
+    assert tess.index_of_face(face) == tess.faces.index(face)
+
+
 def test_register_face_rejects_wrong_type():
   tess = GenericTessellation()
   v1 = TessellationVertex([0, 0, 0])

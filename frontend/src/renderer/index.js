@@ -69,6 +69,34 @@ const HYPERBOLIC_TESSELLATION = { tessellation: 'hyperbolic' };
 // The order `DEBUG_CYCLE_WORLD_KEY` cycles through.
 const DEMO_WORLDS = ['spherical', 'generic', 'hyperbolic'];
 
+// The hyperbolic world's two flat sub-modes play the role 3D/2D play for
+// the other two worlds: "overview" (a wide, bounded Poincare-disk
+// snapshot -- this kind's stand-in for a 3D view) and "close-up" (the
+// exact local projection around wherever the view is centered, unbounded
+// but only numerically trustworthy near that center). Both halves use
+// `FlatMapCameraController`, just constructed with a different
+// `halfHeight` -- there's no third controller class needed here.
+//
+// The two exit/enter thresholds are necessarily measured in different
+// units, since the two sides are genuinely different projections with no
+// shared natural scale -- the same way spherical's own altitude and
+// flat-mode half-height are already different units tied together only
+// by convention:
+// - `HYPERBOLIC_OVERVIEW_HALF_HEIGHT`: comfortably frames the unit disk.
+// - `HYPERBOLIC_CLOSEUP_HALF_HEIGHT`: today's existing close-up default.
+// - `HYPERBOLIC_CLOSEUP_EXIT_RADIUS`: true hyperbolic-distance units
+//   (`flatten_region`'s own log-map radius) -- exit close-up once the
+//   visible half-height grows past this many units.
+// - `HYPERBOLIC_OVERVIEW_ENTER_CLOSEUP_RADIUS`: Poincare-disk units
+//   (`to_poincare`'s own bounded radius) -- enter close-up once the
+//   visible half-height shrinks below this.
+// All four are placeholders, expected to need empirical tuning once
+// there's a real view to look at.
+const HYPERBOLIC_OVERVIEW_HALF_HEIGHT = 1.2;
+const HYPERBOLIC_CLOSEUP_HALF_HEIGHT = 1.0;
+const HYPERBOLIC_CLOSEUP_EXIT_RADIUS = 2.2;
+const HYPERBOLIC_OVERVIEW_ENTER_CLOSEUP_RADIUS = 0.1;
+
 function setStatus(text) {
   statusElement.textContent = text;
 }
@@ -230,13 +258,19 @@ async function main() {
   let genericFlatCenter = null;
   let genericFlatOrientation = null;
 
-  // The hyperbolic demo's own resolved flat-mode center (`{face, b, s}`) --
-  // `null` until the first `getFlatMesh` response arrives after entering.
-  // Unlike `genericFlatCenter`, there's a genuine "first call" case to
-  // skip here (mirroring spherical's own `flatCenter`): this tessellation
-  // has no 3D embedding to derive a starting position from, so the very
-  // first request omits `center` entirely and lets the server start
-  // wherever its own reference point already is.
+  // The hyperbolic world's own resolved flat-mode center (`{face, b, s}`)
+  // -- shared by *both* of its sub-modes (close-up and overview), since
+  // exactly one is ever active at a time and switching between them just
+  // hands this value off directly as the other's entry `center` (both
+  // sub-modes continuously resolve and report a `center` the same way,
+  // just via different server-side projections/`unflatten_*` methods --
+  // see `hyperbolicFlatRecenterRequestFields`).
+  //
+  // `null` until the first response of either sub-mode's *very first*
+  // entry (mirroring spherical's own `flatCenter`): this tessellation has
+  // no 3D position to derive a starting point from, so that first request
+  // omits `center` entirely and lets the server start wherever its own
+  // reference point already is.
   let hyperbolicFlatCenter = null;
 
   // Non-null exactly while the flat map is the active mode. Its camera is
@@ -571,14 +605,24 @@ async function main() {
   /**
    * The request fields that tell the server to re-center exactly on
    * wherever the hyperbolic flat view currently is, once a center is
-   * already known (every call after flat mode's first) -- `{}` before
-   * that, so the request omits `center`/`panOffset` entirely and lets the
-   * server start from its own current reference point (see `server.py`'s
-   * own `_resolve_hyperbolic_flat_center`). Mirrors the spherical flat
-   * mode's own `flatRecenterRequestFields` shape, not generic's -- this
-   * tessellation has a genuine "nothing to derive a start from yet" first
-   * call, the same way spherical does (just for a different reason: no 3D
-   * position instead of no `basis` yet).
+   * already known (every call after either sub-mode's first) -- `{}`
+   * before that, so the request omits `center`/`panOffset` entirely and
+   * lets the server start from its own current reference point (see
+   * `server.py`'s own `_resolve_hyperbolic_flat_center`). Shared by both
+   * sub-modes' refresh functions.
+   *
+   * The two sub-modes' `panOffset` values are in genuinely different,
+   * nonlinearly related units -- close-up's is a true hyperbolic-
+   * distance/log-map offset (matching `flatten_region`'s own output,
+   * resolved via `unflatten_point`'s `tanh`-based conversion); overview's
+   * is a bounded Poincare-disk-radius offset (matching `relative_
+   * poincare`'s own output, resolved via `unflatten_relative_poincare`
+   * with no extra conversion). `FlatMapCameraController` itself is
+   * unit-agnostic (it just reports/clamps raw `camera.position`), so this
+   * works correctly only because each sub-mode always sends its own
+   * camera position to its own matching request (`refreshHyperbolicFlat
+   * Mesh` vs. `refreshHyperbolicOverviewMesh`) -- don't be tempted to
+   * "simplify" the two to look more alike.
    */
   function hyperbolicFlatRecenterRequestFields() {
     if (!hyperbolicFlatCenter) {
@@ -609,6 +653,99 @@ async function main() {
   const scheduleHyperbolicFlatRefresh = serializeRefresh(
       () => flatController ? refreshHyperbolicFlatMesh() : Promise.resolve(),
       (error) => setStatus(`Failed to update flat view: ${error.message}`));
+
+  async function refreshHyperbolicOverviewMesh() {
+    const meshData = await window.mundimonium.getFlatMesh({
+      ...HYPERBOLIC_TESSELLATION, overview: true,
+      ...hyperbolicFlatRecenterRequestFields(),
+    });
+    hyperbolicFlatCenter = meshData.center;
+    updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
+    flatController.recenter();
+    flatController.setMaxPanRadius(meshData.stablePanRadius);
+    return meshData;
+  }
+
+  const scheduleHyperbolicOverviewRefresh = serializeRefresh(
+      () => flatController ? refreshHyperbolicOverviewMesh() : Promise.resolve(),
+      (error) => setStatus(`Failed to update overview: ${error.message}`));
+
+  /**
+   * Enters (or returns to) the hyperbolic world's overview sub-mode -- a
+   * wide, bounded Poincare-disk view (`overview: true`), this kind's
+   * stand-in for the other two worlds' 3D view. Live and pan-driven
+   * exactly like close-up mode: panning re-centers the disk on wherever
+   * you've panned to, clamped to the numerically stable radius (see
+   * `refreshHyperbolicOverviewMesh`/`FlatMapCameraController.
+   * setMaxPanRadius`) -- only zooming in far enough triggers anything
+   * further (a switch into close-up).
+   *
+   * @param {{ face: number, b: number, s: number } | null} center - Where
+   *   to re-center the overview on, or `null` for a fresh entry (letting
+   *   the server start from its own current reference point).
+   */
+  async function switchToHyperbolicOverview(center) {
+    if (flatController) {
+      flatController.dispose();
+    }
+    hyperbolicFlatCenter = center;
+
+    flatController = new FlatMapCameraController(
+        sceneManager.renderer.domElement,
+        { halfHeight: HYPERBOLIC_OVERVIEW_HALF_HEIGHT });
+    await refreshHyperbolicOverviewMesh();
+    sceneManager.setActiveController(flatController);
+
+    flatController.onChange(() => {
+      const visibleHalfHeight =
+          flatController.camera.top / flatController.camera.zoom;
+      if (visibleHalfHeight < HYPERBOLIC_OVERVIEW_ENTER_CLOSEUP_RADIUS) {
+        switchToHyperbolicCloseup(hyperbolicFlatCenter).catch((error) => {
+          setStatus(`Failed to switch to close-up: ${error.message}`);
+        });
+        return;
+      }
+      if (!hasPanned(flatController)) {
+        return; // zoom only -- the flattened geometry hasn't changed
+      }
+      scheduleHyperbolicOverviewRefresh();
+    });
+  }
+
+  /**
+   * Enters the hyperbolic world's close-up sub-mode -- exactly the flat
+   * projection Phase 11 already built (real-time re-centering as you
+   * pan, clamped to the numerically stable radius), resumed at wherever
+   * the view was left within the overview.
+   *
+   * @param {{ face: number, b: number, s: number } | null} center - Where
+   *   to re-center close-up on, or `null` for a fresh entry.
+   */
+  async function switchToHyperbolicCloseup(center) {
+    flatController.dispose();
+    hyperbolicFlatCenter = center;
+
+    flatController = new FlatMapCameraController(
+        sceneManager.renderer.domElement,
+        { halfHeight: HYPERBOLIC_CLOSEUP_HALF_HEIGHT });
+    await refreshHyperbolicFlatMesh();
+    sceneManager.setActiveController(flatController);
+
+    flatController.onChange(() => {
+      const visibleHalfHeight =
+          flatController.camera.top / flatController.camera.zoom;
+      if (visibleHalfHeight > HYPERBOLIC_CLOSEUP_EXIT_RADIUS) {
+        switchToHyperbolicOverview(hyperbolicFlatCenter).catch((error) => {
+          setStatus(`Failed to switch to overview: ${error.message}`);
+        });
+        return;
+      }
+      if (!hasPanned(flatController)) {
+        return; // zoom only -- the flattened geometry hasn't changed
+      }
+      scheduleHyperbolicFlatRefresh();
+    });
+  }
 
   setStatus('Requesting mesh...');
   try {
@@ -740,25 +877,12 @@ async function main() {
         });
         await refreshSurfaceItems();
       } else { // 'hyperbolic'
-        hyperbolicFlatCenter = null; // fresh entry -- nothing to continue yet
         itemGroup.clear(); // this world has no item markers to show
-
         orbitController.setEnabled(false);
-        flatController = new FlatMapCameraController(
-            sceneManager.renderer.domElement);
-        await refreshHyperbolicFlatMesh();
-        sceneManager.setActiveController(flatController);
-
-        flatController.onChange(() => {
-          // No exit-threshold check at all, unlike every other flat mode
-          // here: this world is never anything but flat, so there's no 3D
-          // mode to fall back into -- exiting only ever happens via
-          // `DEBUG_CYCLE_WORLD_KEY`.
-          if (!hasPanned(flatController)) {
-            return; // zoom only -- the flattened geometry hasn't changed
-          }
-          scheduleHyperbolicFlatRefresh();
-        });
+        // Overview is this kind's stand-in for the other two worlds' 3D
+        // view, so entry lands there first, same as spherical/generic
+        // both default to their own 3D mode on entry.
+        await switchToHyperbolicOverview(null);
       }
     } finally {
       switchingModes = false;

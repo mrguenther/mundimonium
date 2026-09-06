@@ -6,6 +6,7 @@ import pytest
 from mundimonium.coordinates.generic_tessellation import (
     GenericTessellation, RelaxableFace, RelaxableVertex,
 )
+from mundimonium.coordinates.hyperbolic_tessellation import HyperbolicTessellation
 from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshFace
 from mundimonium.coordinates.nesting_iso_grid import SectorItem
@@ -16,7 +17,7 @@ from mundimonium.coordinates.stellated_icosahedron import (
 from mundimonium.coordinates.tessellation import TessellationVertex
 from mundimonium.rendering.flat_mesh_export import (
     center_point_from_camera, flatten_frontier_to_buffers,
-    flatten_visible_items, nearby_faces,
+    flatten_visible_items, nearby_faces, poincare_frontier_to_buffers,
 )
 from mundimonium.rendering.lod_mesh_export import select_frontier
 
@@ -196,3 +197,34 @@ def test_faces_within_hops_reaches_only_the_expected_ring():
   assert _faces_within_hops(face_a, 0) == [face_a]
   assert set(_faces_within_hops(face_a, 1)) == {face_a, face_b}
   assert set(_faces_within_hops(face_a, 2)) == {face_a, face_b, face_c}
+
+
+# ---------------------------------------------------------------------------
+# poincare_frontier_to_buffers
+# ---------------------------------------------------------------------------
+
+def test_poincare_frontier_to_buffers_dedups_shared_vertices():
+  tess = HyperbolicTessellation()
+  faces = tess.faces_within_hops(tess.reference_point.grid, 2)
+
+  positions_bytes, indices_bytes, vertex_count, face_count = (
+      poincare_frontier_to_buffers(tess, faces))
+
+  assert face_count == len(faces)
+  assert len(indices_bytes) == face_count * 3 * 4  # uint32
+  assert len(positions_bytes) == vertex_count * 3 * 4  # float32
+  # Every face is a triangle sharing each of its edges with a neighbor, so
+  # deduplicated vertex count must be well below one-per-triangle-corner.
+  assert vertex_count < 3 * face_count
+
+
+def test_poincare_frontier_to_buffers_positions_are_within_the_unit_disk():
+  tess = HyperbolicTessellation()
+  faces = tess.faces_within_hops(tess.reference_point.grid, 6)
+
+  positions_bytes, _, _, _ = poincare_frontier_to_buffers(tess, faces)
+  positions = np.frombuffer(positions_bytes, dtype=np.float32).reshape(-1, 3)
+
+  np.testing.assert_array_equal(positions[:, 2], 0.0)
+  radii = np.hypot(positions[:, 0], positions[:, 1])
+  assert np.all(radii < 1.0)

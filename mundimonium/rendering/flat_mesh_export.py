@@ -5,7 +5,9 @@ from mundimonium.coordinates.hyperbolic_tessellation import HyperbolicTessellati
 from mundimonium.coordinates.isometric import IsometricDirection, IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshSector
 from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
-from mundimonium.coordinates.tessellation import Tessellation, TessellationFace
+from mundimonium.coordinates.tessellation import (
+    Tessellation, TessellationFace, TessellationVertex,
+)
 from mundimonium.rendering import item_export
 from mundimonium.rendering.lod_mesh_export import SectorAddress
 
@@ -61,7 +63,7 @@ def center_to_json(tessellation: Tessellation, point: IsometricPoint) -> dict:
   LOD sub-sector) -- this doesn't handle a nested `SectorAddress`-style
   path, unlike `lod_mesh_export.py`'s own address scheme, since it
   doesn't need to. Works for any `Tessellation` (only calls `tessellation
-  .faces.index(...)` and constructs a plain `IsometricPoint`), not just
+  .index_of_face(...)` and constructs a plain `IsometricPoint`), not just
   `SphericalTessellation`.
 
   Args:
@@ -72,7 +74,7 @@ def center_to_json(tessellation: Tessellation, point: IsometricPoint) -> dict:
     A `{'face': int, 'b': float, 's': float}` dict.
   """
   return {
-      'face': tessellation.faces.index(point.grid),
+      'face': tessellation.index_of_face(point.grid),
       'b': point.b,
       's': point.s,
   }
@@ -301,6 +303,58 @@ def flatten_frontier_to_buffers(
   return (
       positions_array.tobytes(), indices_array.tobytes(),
       len(targets), len(frontier))
+
+
+def poincare_frontier_to_buffers(
+    tessellation: HyperbolicTessellation,
+    faces: Sequence[TessellationFace],
+) -> tuple[bytes, bytes, int, int]:
+  """Exports `faces` (real, already-built top-level faces of
+  `tessellation`) as flat (`z = 0`) renderer-ready buffers, positioned
+  via each face's own vertices' `HyperbolicTessellation.relative_
+  poincare` -- bounded, disk-shaped Poincare-disk coordinates relative to
+  `tessellation`'s current reference frame, unlike `flatten_frontier_to_
+  buffers`'s unbounded local tangent-plane distances -- for a wide
+  "overview" rendering of however much of the mesh is reachable, rather
+  than an exact local neighborhood around one center.
+
+  Unlike `flatten_frontier_to_buffers`, vertices are deduplicated by
+  identity (the same way `mesh_export.tessellation_to_buffers` dedups a
+  true 3D mesh) rather than each triangle owning its own 3 corners --
+  worth doing here since `faces` can number in the thousands, and
+  `relative_poincare` gives every face sharing a vertex the exact same
+  position for it regardless of which face asks, so there's no reason
+  not to.
+
+  Args:
+    tessellation: The faces' owning tessellation.
+    faces: The faces to export -- typically a `HyperbolicTessellation.
+      faces_within_hops` result.
+
+  Returns:
+    A `(positions_bytes, indices_bytes, vertex_count, face_count)` tuple,
+    matching `flatten_frontier_to_buffers`'s buffer layout.
+  """
+  vertex_index: dict[TessellationVertex, int] = {}
+  positions: list[tuple[float, float, float]] = []
+  indices: list[tuple[int, int, int]] = []
+  for face in faces:
+    corner_indices = []
+    for vertex in (face.vertex_b, face.vertex_s, face.vertex_d):
+      index = vertex_index.get(vertex)
+      if index is None:
+        index = len(positions)
+        vertex_index[vertex] = index
+        x, y = tessellation.relative_poincare(vertex)
+        positions.append((x, y, 0.0))
+      corner_indices.append(index)
+    indices.append(tuple(corner_indices))
+
+  positions_array = np.array(positions, dtype=np.float32)
+  indices_array = np.array(indices, dtype=np.uint32)
+  return (
+      positions_array.tobytes(), indices_array.tobytes(),
+      len(positions), len(faces))
 
 
 def flatten_visible_items(

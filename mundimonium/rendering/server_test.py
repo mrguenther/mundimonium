@@ -586,3 +586,76 @@ def test_get_items_is_not_supported_for_hyperbolic():
   }
   response_header, _ = dispatch(header, b'')
   assert response_header['type'] == 'error'
+
+
+def test_get_flat_mesh_overview_returns_a_valid_response_for_hyperbolic():
+  header = {
+      'type': 'get_flat_mesh', 'id': '13f', 'tessellation': 'hyperbolic',
+      'overview': True,
+  }
+  response_header, response_body = dispatch(header, b'')
+  assert response_header['type'] == 'flat_mesh'
+  assert response_header['id'] == '13f'
+  assert response_header['face_count'] == len(response_header['sectors'])
+  assert len(response_body) == (
+      response_header['positions_byte_length']
+      + response_header['indices_byte_length'])
+
+  positions = np.frombuffer(
+      response_body[:response_header['positions_byte_length']],
+      dtype=np.float32).reshape(-1, 3)
+  assert np.all(positions[:, 2] == 0.0)
+  radii = np.hypot(positions[:, 0], positions[:, 1])
+  assert np.all(radii < 1.0)
+  # Live and pan-driven like close-up mode -- see
+  # `_handle_get_hyperbolic_overview_mesh`'s own docstring. `stable_pan_
+  # radius` is a *Poincare-disk* radius here (bounded < 1), not a raw
+  # hyperbolic distance like close-up's own.
+  assert {'face', 'b', 's'} <= response_header['center'].keys()
+  assert 0.0 < response_header['stable_pan_radius'] < 1.0
+
+
+def test_get_flat_mesh_overview_returns_more_faces_than_closeup_for_hyperbolic():
+  tessellation, center = _hyperbolic_demo_center()
+  closeup_header = {
+      'type': 'get_flat_mesh', 'id': '13g', 'tessellation': 'hyperbolic',
+      'center': center,
+  }
+  closeup_response, _ = dispatch(closeup_header, b'')
+
+  overview_header = {
+      'type': 'get_flat_mesh', 'id': '13h', 'tessellation': 'hyperbolic',
+      'overview': True, 'center': center,
+  }
+  overview_response, _ = dispatch(overview_header, b'')
+
+  assert overview_response['face_count'] > closeup_response['face_count']
+
+
+def test_get_flat_mesh_overview_pan_offset_recenters_via_unflatten_relative_poincare_for_hyperbolic():
+  tessellation, center = _hyperbolic_demo_center()
+  entry_header = {
+      'type': 'get_flat_mesh', 'id': '13i', 'tessellation': 'hyperbolic',
+      'overview': True, 'center': center,
+  }
+  entry_response, _ = dispatch(entry_header, b'')
+
+  pan_offset = [0.05, -0.03]
+  panned_header = {
+      'type': 'get_flat_mesh', 'id': '13j', 'tessellation': 'hyperbolic',
+      'overview': True, 'center': entry_response['center'],
+      'pan_offset': pan_offset,
+  }
+  panned_response, _ = dispatch(panned_header, b'')
+
+  # Independently compute the expected new center the same way the server
+  # should have, and confirm the response's own resolved value matches.
+  reference_point = flat_mesh_export.center_from_json(
+      tessellation, entry_response['center'])
+  expected_center = tessellation.unflatten_relative_poincare(
+      reference_point, *pan_offset)
+  actual_center = flat_mesh_export.center_from_json(
+      tessellation, panned_response['center'])
+  assert tessellation.geodesic_distance(
+      actual_center, expected_center) == pytest.approx(0.0, abs=1e-6)
+  assert 0.0 < panned_response['stable_pan_radius'] < 1.0

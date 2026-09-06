@@ -104,6 +104,7 @@ function registerIpcHandlers(pythonBridge, getWindows) {
       pan_offset: request.panOffset,
       basis: request.basis,
       orientation: request.orientation,
+      overview: request.overview,
     });
 
     const positions = new Float32Array(copyToAlignedArrayBuffer(

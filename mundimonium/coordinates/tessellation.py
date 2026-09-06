@@ -124,6 +124,20 @@ class Tessellation(abc.ABC):
     """The number of faces registered so far."""
     return len(self._faces)
 
+  def index_of_face(self, face: TessellationFace) -> int:
+    """`face`'s index into `self.faces`.
+
+    An O(1) lookup via the same map `register_face` already maintains
+    internally, unlike `self.faces.index(face)`'s O(n) linear scan.
+
+    Args:
+      face: The face to look up. Must already be registered.
+
+    Returns:
+      `face`'s index.
+    """
+    return self._face_index_map[face]
+
   @abc.abstractmethod
   def coords_at_point(self, point: IsometricPoint) -> tuple[Number, ...]:
     """
