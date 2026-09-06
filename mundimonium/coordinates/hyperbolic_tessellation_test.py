@@ -277,6 +277,79 @@ def test_point_to_3d_position_is_not_supported(tess):
 
 
 # ---------------------------------------------------------------------------
+# unflatten_point
+#
+# These use their own fresh tessellation rather than the shared `tess`
+# fixture, since they exercise `recenter` directly -- reusing the shared,
+# module-scoped fixture would leak reference-frame state into later tests.
+# ---------------------------------------------------------------------------
+
+def test_unflatten_point_round_trips_flatten_region():
+  tess = HyperbolicTessellation()
+  rng = random.Random(11)
+  for _ in range(20):
+    center = _random_point(_random_stable_face(tess, rng), rng)
+    tess.recenter(center)
+    target = _random_point(_random_stable_face(tess, rng), rng)
+    (x, y), = tess.flatten_region(center, [target])
+    recovered = tess.unflatten_point(center, x, y)
+    assert tess.geodesic_distance(target, recovered) == pytest.approx(
+        0.0, abs=1e-6)
+
+
+def test_unflatten_point_of_zero_offset_returns_center_unchanged():
+  tess = HyperbolicTessellation()
+  rng = random.Random(3)
+  center = _random_point(_random_stable_face(tess, rng), rng)
+  result = tess.unflatten_point(center, 0.0, 0.0)
+  assert result.grid is center.grid
+  assert result.b == pytest.approx(center.b)
+  assert result.s == pytest.approx(center.s)
+
+
+def test_unflatten_point_preserves_distance_from_center():
+  tess = HyperbolicTessellation()
+  rng = random.Random(4)
+  center = _random_point(_random_stable_face(tess, rng), rng)
+  tess.recenter(center)
+  for _ in range(10):
+    x, y = rng.uniform(-0.5, 0.5), rng.uniform(-0.5, 0.5)
+    new_point = tess.unflatten_point(center, x, y)
+    assert tess.geodesic_distance(center, new_point) == pytest.approx(
+        math.hypot(x, y), rel=1e-5)
+
+
+def test_unflatten_point_composes_correctly_across_consecutive_pans():
+  # The exact scenario `server.py`'s own request handling relies on:
+  # recenter to the newly-resolved center before resolving the next pan,
+  # every time (see `_resolve_hyperbolic_flat_center`).
+  tess = HyperbolicTessellation()
+  rng = random.Random(5)
+  center = _random_point(_random_stable_face(tess, rng), rng)
+  tess.recenter(center)
+  for _ in range(15):
+    dx, dy = rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3)
+    new_center = tess.unflatten_point(center, dx, dy)
+    assert tess.geodesic_distance(center, new_center) == pytest.approx(
+        math.hypot(dx, dy), rel=1e-5)
+    tess.recenter(new_center)
+    center = new_center
+
+
+def test_stable_faces_and_stable_radius_reflect_recenter():
+  tess = HyperbolicTessellation(order=7, rings=1, max_stable_hops=2)
+  original_faces = tess.stable_faces
+  original_radius = tess.stable_radius
+  assert tess.reference_point.grid in original_faces
+  assert original_radius > 0.0
+
+  far_point = tess.new_point_at_coords(0.9, 0.0)
+  tess.recenter(far_point)
+  assert tess.stable_faces != original_faces
+  assert far_point.grid in tess.stable_faces
+
+
+# ---------------------------------------------------------------------------
 # geodesically_canonicalize_point
 # ---------------------------------------------------------------------------
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mundimonium.coordinates.generic_tessellation import GenericTessellation
+from mundimonium.coordinates.hyperbolic_tessellation import HyperbolicTessellation
 from mundimonium.coordinates.isometric import IsometricDirection, IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshSector
 from mundimonium.coordinates.spherical_tessellation import SphericalTessellation
@@ -112,6 +113,15 @@ def nearby_faces(
   -- cost proportional to the faces actually included, never to the
   mesh's total size, unlike a naive scan checking every face's distance.
 
+  For `HyperbolicTessellation`: `center`'s already-current `stable_faces`
+  -- the same numerically-trustworthy region `flatten_region`/
+  `unflatten_point` themselves rely on, reused directly rather than a
+  separate hop-limited scan. Requires `center` to already be the
+  tessellation's reference point (see `HyperbolicTessellation.
+  unflatten_point`'s own docstring for why) -- true by construction here,
+  since `server.py`'s `_resolve_hyperbolic_flat_center` always recenters
+  to `center` before this is ever called.
+
   For any other tessellation (`GenericTessellation`): exactly
   `center.grid`'s own precomputed `nearby_faces` -- already the correct,
   cheap-to-look-up "nearby" set described above, with no separate
@@ -119,6 +129,8 @@ def nearby_faces(
   """
   if isinstance(tessellation, SphericalTessellation):
     return _faces_within_hops(center.grid, _FLAT_MODE_RENDER_RADIUS_HOPS)
+  if isinstance(tessellation, HyperbolicTessellation):
+    return list(tessellation.stable_faces)
   return list(center.grid.nearby_faces)
 
 

@@ -60,6 +60,15 @@ contextBridge.exposeInMainWorld('mundimonium', {
    * no tangent-basis concept of its own -- see `GenericTessellation
    * .unflatten_point_and_transport_orientation`.
    *
+   * `tessellation: 'hyperbolic'` needs neither `cameraPosition` nor
+   * `basis`/`orientation` -- this world has no 3D embedding at all (it's
+   * never anything but flat) and no orientation-continuity concept of its
+   * own. Its response instead carries `stablePanRadius`: the caller
+   * should keep the flat camera's pan distance from `center` under this
+   * value (e.g. via `FlatMapCameraController.setMaxPanRadius`), since
+   * this tessellation's projection is only numerically valid within a
+   * bounded radius of wherever it's currently centered.
+   *
    * @param {{ tessellation: string, radius?: number, frequency?: number,
    *   cameraPosition?: [number, number, number], autoSubdivide?: boolean,
    *   center?: { face: number, b: number, s: number },
@@ -67,14 +76,19 @@ contextBridge.exposeInMainWorld('mundimonium', {
    *   orientation?: { cos: number, sin: number },
    *   panOffset?: [number, number] }} request - `cameraPosition` is only
    *   used (and required) for `tessellation: 'spherical'`'s first call, to
-   *   resolve an initial `center`; `'generic'` always supplies `center`
+   *   resolve an initial `center`. `'generic'` always supplies `center`
    *   directly instead (its surface-following camera already knows its
    *   own exact position), so `cameraPosition` is never needed there.
+   *   `'hyperbolic'` needs neither: its first call omits `center` too,
+   *   letting the server start from wherever its own reference point
+   *   already is (this tessellation has no 3D position to derive one
+   *   from in the first place).
    * @returns {Promise<{ positions: Float32Array, indices: Uint32Array,
    *   sectors: object[], center: { face: number, b: number, s: number },
    *   basis?: { e_x: [number, number, number], e_y: [number, number, number] },
    *   centerPosition?: [number, number, number],
-   *   orientation?: { cos: number, sin: number } }>}
+   *   orientation?: { cos: number, sin: number },
+   *   stablePanRadius?: number }>}
    *   `center`/`basis`/`orientation` are what this response was actually
    *   built around -- pass them back as the next call's own `center`/
    *   `basis`/`orientation`. `basis`/`centerPosition` are only present
@@ -82,7 +96,8 @@ contextBridge.exposeInMainWorld('mundimonium', {
    *   true 3D position, for resuming the 3D orbit camera there if flat
    *   mode is exited. `orientation` is only present for `tessellation:
    *   'generic'`, and only once resolved via a `panOffset` (nothing to
-   *   report on the first, `panOffset`-less call).
+   *   report on the first, `panOffset`-less call). `stablePanRadius` is
+   *   only present for `tessellation: 'hyperbolic'`.
    */
   getFlatMesh: (request) => ipcRenderer.invoke('mesh:getFlat', request),
 

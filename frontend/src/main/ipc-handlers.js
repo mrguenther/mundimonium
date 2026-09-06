@@ -114,6 +114,7 @@ function registerIpcHandlers(pythonBridge, getWindows) {
       positions, indices, sectors: header.sectors, center: header.center,
       basis: header.basis, centerPosition: header.center_position,
       orientation: header.orientation,
+      stablePanRadius: header.stable_pan_radius,
     };
   });
 

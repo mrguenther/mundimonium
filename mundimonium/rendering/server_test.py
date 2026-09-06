@@ -512,3 +512,77 @@ def test_get_flat_items_with_pan_offset_uses_the_recentered_point_for_generic():
   assert actual_center.grid is expected_center.grid
   assert actual_center.b == pytest.approx(expected_center.b)
   assert actual_center.s == pytest.approx(expected_center.s)
+
+
+def _hyperbolic_demo_center():
+  """The demo hyperbolic tessellation, plus a `center_to_json`-encoded
+  point at its own current reference point, for tests that need a
+  starting `center` request field."""
+  tessellation = server._get_hyperbolic_demo_tessellation()
+  return tessellation, flat_mesh_export.center_to_json(
+      tessellation, tessellation.reference_point)
+
+
+def test_get_flat_mesh_returns_a_valid_response_for_hyperbolic_with_zero_z():
+  header = {'type': 'get_flat_mesh', 'id': '13a', 'tessellation': 'hyperbolic'}
+  response_header, response_body = dispatch(header, b'')
+  assert response_header['type'] == 'flat_mesh'
+  assert response_header['id'] == '13a'
+  assert response_header['face_count'] == len(response_header['sectors'])
+  assert len(response_body) == (
+      response_header['positions_byte_length']
+      + response_header['indices_byte_length'])
+
+  positions = np.frombuffer(
+      response_body[:response_header['positions_byte_length']],
+      dtype=np.float32).reshape(-1, 3)
+  assert np.all(positions[:, 2] == 0.0)
+  assert {'face', 'b', 's'} <= response_header['center'].keys()
+  assert response_header['stable_pan_radius'] > 0.0
+  assert 'basis' not in response_header
+  assert 'orientation' not in response_header
+  assert 'center_position' not in response_header
+
+
+def test_get_flat_mesh_with_pan_offset_recenters_via_unflatten_point_for_hyperbolic():
+  tessellation, center = _hyperbolic_demo_center()
+  entry_header = {
+      'type': 'get_flat_mesh', 'id': '13b', 'tessellation': 'hyperbolic',
+      'center': center,
+  }
+  entry_response, _ = dispatch(entry_header, b'')
+
+  pan_offset = [0.1, -0.15]
+  panned_header = {
+      'type': 'get_flat_mesh', 'id': '13c', 'tessellation': 'hyperbolic',
+      'center': entry_response['center'], 'pan_offset': pan_offset,
+  }
+  panned_response, _ = dispatch(panned_header, b'')
+
+  # Independently compute the expected new center the same way the server
+  # should have, and confirm the response's own resolved value matches.
+  reference_point = flat_mesh_export.center_from_json(
+      tessellation, entry_response['center'])
+  expected_center = tessellation.unflatten_point(reference_point, *pan_offset)
+  actual_center = flat_mesh_export.center_from_json(
+      tessellation, panned_response['center'])
+  assert tessellation.geodesic_distance(
+      actual_center, expected_center) == pytest.approx(0.0, abs=1e-6)
+  assert panned_response['stable_pan_radius'] > 0.0
+
+
+def test_get_flat_items_is_not_supported_for_hyperbolic():
+  # No demo items are seeded for this tessellation -- see
+  # `_get_hyperbolic_demo_tessellation`'s own docstring for why.
+  header = {'type': 'get_flat_items', 'id': '13d', 'tessellation': 'hyperbolic'}
+  response_header, _ = dispatch(header, b'')
+  assert response_header['type'] == 'error'
+
+
+def test_get_items_is_not_supported_for_hyperbolic():
+  header = {
+      'type': 'get_items', 'id': '13e', 'tessellation': 'hyperbolic',
+      'camera_position': [0.0, 0.0, 0.0],
+  }
+  response_header, _ = dispatch(header, b'')
+  assert response_header['type'] == 'error'

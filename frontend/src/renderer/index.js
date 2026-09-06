@@ -53,15 +53,21 @@ const FLAT_MODE_THRESHOLD = 2.0;
 // first sector from the most recently rendered frontier.
 const DEBUG_SUBDIVIDE_KEY = 'g';
 
-// Debug-only toggle between the spherical world and the fixed
-// `GenericTessellation` demo shape (a stellated icosahedron -- see
-// `mundimonium/rendering/generic_demo.py`). `'generic'` only supports the
-// plain static `get_mesh`/`get_items` endpoints so far (no LOD streaming,
-// no flat-map mode -- see the plan's Phase 9), so this bypasses the
-// camera-driven LOD refresh loop entirely while showing it, rather than
-// making that loop generic-aware for a feature it doesn't support yet.
-const DEBUG_TOGGLE_GENERIC_KEY = 't';
+// Debug-only cycle between the spherical world and two fixed demo shapes:
+// `GenericTessellation` (a stellated icosahedron -- see `mundimonium/
+// rendering/generic_demo.py`) and `HyperbolicTessellation` (always shown
+// in flat 2D mode -- this world has no 3D embedding at all). Neither demo
+// supports the spherical world's own on-demand LOD streaming or item
+// markers (`'hyperbolic'` has no item markers at all -- see `server.py`'s
+// own `_get_hyperbolic_demo_tessellation`), so this bypasses the camera-
+// driven LOD refresh loop entirely while either is showing, rather than
+// making that loop aware of features it doesn't support yet.
+const DEBUG_CYCLE_WORLD_KEY = 't';
 const GENERIC_TESSELLATION = { tessellation: 'generic' };
+const HYPERBOLIC_TESSELLATION = { tessellation: 'hyperbolic' };
+
+// The order `DEBUG_CYCLE_WORLD_KEY` cycles through.
+const DEMO_WORLDS = ['spherical', 'generic', 'hyperbolic'];
 
 function setStatus(text) {
   statusElement.textContent = text;
@@ -195,11 +201,10 @@ async function main() {
     }
   }
 
-  // True exactly while `DEBUG_TOGGLE_GENERIC_KEY`'s demo mesh is showing
-  // (in either its own 3D or flat mode) -- suppresses the camera-driven
-  // LOD/flat-mode refresh loop below, which only knows how to talk to the
-  // spherical world's endpoints.
-  let viewingGenericDemo = false;
+  // Which of `DEMO_WORLDS` is currently showing -- suppresses the camera-
+  // driven LOD/flat-mode refresh loop below whenever it isn't `'spherical'`
+  // (that loop only knows how to talk to the spherical world's endpoints).
+  let activeWorld = 'spherical';
 
   // The generic demo's own 3D camera -- a `SurfaceCameraController`
   // (hugs the mesh surface, not an orbit) -- non-null exactly while
@@ -224,6 +229,15 @@ async function main() {
   // `null` until resolved via a pan, same as `genericFlatCenter`.
   let genericFlatCenter = null;
   let genericFlatOrientation = null;
+
+  // The hyperbolic demo's own resolved flat-mode center (`{face, b, s}`) --
+  // `null` until the first `getFlatMesh` response arrives after entering.
+  // Unlike `genericFlatCenter`, there's a genuine "first call" case to
+  // skip here (mirroring spherical's own `flatCenter`): this tessellation
+  // has no 3D embedding to derive a starting position from, so the very
+  // first request omits `center` entirely and lets the server start
+  // wherever its own reference point already is.
+  let hyperbolicFlatCenter = null;
 
   // Non-null exactly while the flat map is the active mode. Its camera is
   // rebuilt fresh each time flat mode is entered. `flatModeCameraPosition`
@@ -554,6 +568,48 @@ async function main() {
     await refreshSurfaceItems();
   }
 
+  /**
+   * The request fields that tell the server to re-center exactly on
+   * wherever the hyperbolic flat view currently is, once a center is
+   * already known (every call after flat mode's first) -- `{}` before
+   * that, so the request omits `center`/`panOffset` entirely and lets the
+   * server start from its own current reference point (see `server.py`'s
+   * own `_resolve_hyperbolic_flat_center`). Mirrors the spherical flat
+   * mode's own `flatRecenterRequestFields` shape, not generic's -- this
+   * tessellation has a genuine "nothing to derive a start from yet" first
+   * call, the same way spherical does (just for a different reason: no 3D
+   * position instead of no `basis` yet).
+   */
+  function hyperbolicFlatRecenterRequestFields() {
+    if (!hyperbolicFlatCenter) {
+      return {};
+    }
+    return {
+      center: hyperbolicFlatCenter,
+      panOffset: [
+        flatController.camera.position.x, flatController.camera.position.y,
+      ],
+    };
+  }
+
+  async function refreshHyperbolicFlatMesh() {
+    const meshData = await window.mundimonium.getFlatMesh({
+      ...HYPERBOLIC_TESSELLATION, ...hyperbolicFlatRecenterRequestFields(),
+    });
+    hyperbolicFlatCenter = meshData.center;
+    updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
+    flatController.recenter();
+    // Keeps the camera from panning past wherever this response's own
+    // geometry stops being numerically trustworthy -- see
+    // `FlatMapCameraController.setMaxPanRadius`'s own docstring.
+    flatController.setMaxPanRadius(meshData.stablePanRadius);
+    return meshData;
+  }
+
+  const scheduleHyperbolicFlatRefresh = serializeRefresh(
+      () => flatController ? refreshHyperbolicFlatMesh() : Promise.resolve(),
+      (error) => setStatus(`Failed to update flat view: ${error.message}`));
+
   setStatus('Requesting mesh...');
   try {
     const meshData = await window.mundimonium.getLodMesh({
@@ -579,7 +635,7 @@ async function main() {
   }
 
   orbitController.onChange(() => {
-    if (switchingModes || viewingGenericDemo) {
+    if (switchingModes || activeWorld !== 'spherical') {
       return;
     }
     const cameraPosition = cameraPositionArray(orbitController.camera);
@@ -609,41 +665,61 @@ async function main() {
   });
 
   window.addEventListener('keydown', (event) => {
-    if (event.key !== DEBUG_TOGGLE_GENERIC_KEY || flatController) {
-      return; // ambiguous which flat mode would apply -- stay put
+    if (event.key !== DEBUG_CYCLE_WORLD_KEY) {
+      return;
     }
-    toggleGenericDemo().catch((error) => {
-      setStatus(`Failed to toggle generic demo: ${error.message}`);
+    // Blocked while a *temporary*, zoom-triggered flat mode (spherical's
+    // or generic's own) is showing -- ambiguous which one to tear down.
+    // Hyperbolic's own flat mode doesn't count: it's that world's only
+    // mode, not a temporary overlay, so cycling away from it is always
+    // unambiguous.
+    if (flatController && activeWorld !== 'hyperbolic') {
+      return;
+    }
+    cycleWorld().catch((error) => {
+      setStatus(`Failed to switch world: ${error.message}`);
     });
   });
 
-  async function toggleGenericDemo() {
+  async function cycleWorld() {
     if (switchingModes) {
       return;
     }
     switchingModes = true;
     try {
-      if (viewingGenericDemo) {
-        // Back to the spherical world, exactly as on initial load.
+      const previousWorld = activeWorld;
+      activeWorld = DEMO_WORLDS[
+          (DEMO_WORLDS.indexOf(activeWorld) + 1) % DEMO_WORLDS.length];
+
+      // Tear down whichever world was active. Nothing to do for
+      // 'spherical': `orbitController`/`mesh`/`wireframe` persist across
+      // every world switch, only their geometry/enabled state changes.
+      if (previousWorld === 'generic') {
         surfaceController.dispose();
         surfaceController = null;
+      } else if (previousWorld === 'hyperbolic') {
+        flatController.dispose();
+        flatController = null;
+        hyperbolicFlatCenter = null;
+      }
+
+      if (activeWorld === 'spherical') {
+        // Exactly as on initial load.
         const cameraPosition = cameraPositionArray(orbitController.camera);
         const meshData = await window.mundimonium.getLodMesh(
             { ...TESSELLATION, cameraPosition });
         lastSectors = meshData.sectors;
         updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
-        viewingGenericDemo = false;
         orbitController.setEnabled(true);
         sceneManager.setActiveController(orbitController);
         await refreshItems();
-      } else {
+      } else if (activeWorld === 'generic') {
         const meshData = await window.mundimonium.getMesh(GENERIC_TESSELLATION);
         lastSectors = []; // subdivide/LOD refresh isn't supported here
         // No `sectors` in a plain `getMesh` response -- no per-face
         // addresses to label, so `updateMeshGeometry` just clears any
-        // debug labels left over from the spherical world.
+        // debug labels left over from the previous world.
         updateMeshGeometry(buildGeometry(meshData), meshData.sectors);
-        viewingGenericDemo = true;
 
         orbitController.setEnabled(false);
         surfaceController = new SurfaceCameraController(
@@ -663,6 +739,26 @@ async function main() {
           });
         });
         await refreshSurfaceItems();
+      } else { // 'hyperbolic'
+        hyperbolicFlatCenter = null; // fresh entry -- nothing to continue yet
+        itemGroup.clear(); // this world has no item markers to show
+
+        orbitController.setEnabled(false);
+        flatController = new FlatMapCameraController(
+            sceneManager.renderer.domElement);
+        await refreshHyperbolicFlatMesh();
+        sceneManager.setActiveController(flatController);
+
+        flatController.onChange(() => {
+          // No exit-threshold check at all, unlike every other flat mode
+          // here: this world is never anything but flat, so there's no 3D
+          // mode to fall back into -- exiting only ever happens via
+          // `DEBUG_CYCLE_WORLD_KEY`.
+          if (!hasPanned(flatController)) {
+            return; // zoom only -- the flattened geometry hasn't changed
+          }
+          scheduleHyperbolicFlatRefresh();
+        });
       }
     } finally {
       switchingModes = false;

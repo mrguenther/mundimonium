@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mundimonium.coordinates.generic_tessellation import GenericTessellation
+from mundimonium.coordinates.hyperbolic_tessellation import HyperbolicTessellation
 from mundimonium.coordinates.isometric import IsometricPoint
 from mundimonium.coordinates.lod_mesh import LodMeshFace
 from mundimonium.coordinates.nesting_iso_grid import SectorItem
@@ -74,6 +75,27 @@ def _get_generic_demo_tessellation() -> Tessellation:
   if _generic_demo_tessellation is None:
     _generic_demo_tessellation = generic_demo.build_demo_tessellation()
   return _generic_demo_tessellation
+
+
+# A lazily-built singleton, mirroring `_generic_demo_tessellation` --
+# `HyperbolicTessellation` has no `radius`/`frequency`-style tunables
+# either (its shape is fully determined by `order`, fixed here at
+# construction), so there's likewise no cache key needed. Unlike the other
+# two kinds, this tessellation carries real mutable state across requests
+# (its own `_reference_point`/stable region -- see `recenter`), which is
+# exactly what `_resolve_hyperbolic_flat_center` relies on.
+_hyperbolic_demo_tessellation: HyperbolicTessellation | None = None
+
+
+def _get_hyperbolic_demo_tessellation() -> HyperbolicTessellation:
+  """Returns the persistent demo `HyperbolicTessellation`, building it (at
+  its own class defaults) the first time it's requested. No items are
+  seeded here, unlike the other two demo tessellations -- this world is
+  about proving out the mesh/panning mechanics, not content."""
+  global _hyperbolic_demo_tessellation
+  if _hyperbolic_demo_tessellation is None:
+    _hyperbolic_demo_tessellation = HyperbolicTessellation()
+  return _hyperbolic_demo_tessellation
 
 
 def _handle_get_mesh(header: dict) -> tuple[dict, bytes]:
@@ -262,12 +284,68 @@ def _resolve_generic_flat_center_and_orientation(
   return center, None
 
 
+# Tunable margin below `HyperbolicTessellation.stable_radius`'s own exact
+# numerical-stability boundary, reported to the client as `stable_pan_
+# radius` -- kept comfortably inside the true boundary (rather than
+# reporting `stable_radius` itself) so a pan clamped right up against it
+# never actually trips the class's own "too far to bridge" exception, and
+# so the rendered frontier (which exactly matches `stable_faces`) always
+# still covers slightly more than what the client can pan to before the
+# next reflatten. A placeholder value, expected to need empirical tuning
+# once there's a real view to look at.
+_HYPERBOLIC_PAN_SAFETY_FACTOR = 0.8
+
+
+def _resolve_hyperbolic_flat_center(
+    tessellation: HyperbolicTessellation, header: dict,
+) -> IsometricPoint:
+  """The mesh point a hyperbolic `get_flat_mesh` request should center its
+  projection on.
+
+  If `header` carries no `center` at all, this is flat mode's very first
+  request -- there's no 3D position to derive a starting point from (this
+  tessellation has no 3D embedding), so it starts wherever the
+  tessellation's own reference point already is. Otherwise decodes
+  `header['center']` and, if `header` also carries `pan_offset`, advances
+  it via `HyperbolicTessellation.unflatten_point`.
+
+  Whichever way `center` was resolved, always finishes by recentering the
+  tessellation there before returning it. This does double duty: it
+  refreshes `stable_faces`/`stable_radius` around the point about to be
+  rendered (used both for the render frontier and for the response's own
+  `stable_pan_radius`), and it establishes the exact reference-frame
+  convention `flatten_region`'s own `(x, y)` output depends on -- see
+  `HyperbolicTessellation.unflatten_point`'s docstring for why this
+  matters, not just for precision.
+
+  Args:
+    tessellation: The tessellation to resolve a center on.
+    header: The request header.
+
+  Returns:
+    The resolved center, already the tessellation's current reference
+    point.
+  """
+  if 'center' not in header:
+    center = tessellation.reference_point
+  else:
+    old_center = flat_mesh_export.center_from_json(
+        tessellation, header['center'])
+    if 'pan_offset' not in header:
+      center = old_center
+    else:
+      pan_x, pan_y = header['pan_offset']
+      center = tessellation.unflatten_point(old_center, pan_x, pan_y)
+  tessellation.recenter(center)
+  return center
+
+
 def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
   """Handles a `get_flat_mesh` request.
 
   Args:
-    header: The request header. Must include `tessellation` (`'spherical'`
-      or `'generic'`).
+    header: The request header. Must include `tessellation` (`'spherical'`,
+      `'generic'`, or `'hyperbolic'`).
 
       For `'spherical'`: that tessellation type's own construction
       parameters (`radius`, `frequency`), and either `camera_position`
@@ -290,6 +368,15 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
       an `orientation` (a 2x2 rotation) forward instead, for the same
       screen-space-continuity purpose.
 
+      For `'hyperbolic'`: `center` (a `{face, b, s}` referring to the
+      fixed demo tessellation) and `pan_offset`, once a previous response
+      has provided a `center` to continue from (see `_resolve_hyperbolic_
+      flat_center`); both absent on flat mode's very first request. No
+      `camera_position`/`basis`/`orientation`: this tessellation has no 3D
+      embedding at all (it's never anything but flat), and no orientation-
+      continuity concept of its own -- see `HyperbolicTessellation.
+      unflatten_point`'s docstring for why none is needed here.
+
   Returns:
     A `(response_header, response_body)` pair -- a `flat_mesh` response,
     the same shape as `get_lod_mesh`'s `lod_mesh` response, but with
@@ -300,8 +387,13 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
     json`-encoded) and `center_position` (the resolved center's own true
     3D position, `[x, y, z]`) -- for the caller to resume the 3D orbit
     camera at, if it exits flat mode, wherever the view has actually
-    panned to by then; and (`'generic'` only, once resolved via a
-    `pan_offset`) `orientation` (`orientation_to_json`-encoded).
+    panned to by then; (`'generic'` only, once resolved via a
+    `pan_offset`) `orientation` (`orientation_to_json`-encoded); and
+    (`'hyperbolic'` only) `stable_pan_radius` (a float) -- the caller
+    should keep the flat camera's own pan distance from its last-
+    resolved center under this value, so a pan can never wander outside
+    the region this response's own geometry actually covers (see
+    `_HYPERBOLIC_PAN_SAFETY_FACTOR`).
 
   Raises:
     ValueError: If `header["tessellation"]` isn't a supported kind.
@@ -309,6 +401,7 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
   tessellation_kind = header.get('tessellation')
   center_position = None
   orientation_out = None
+  stable_pan_radius = None
   if tessellation_kind == 'spherical':
     tessellation = _get_lod_tessellation(
         header.get('radius', 1.0), header.get('frequency', 1))
@@ -340,6 +433,19 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
         (face, lod_mesh_export.SectorAddress(tessellation.faces.index(face)))
         for face in flat_mesh_export.nearby_faces(tessellation, center)
     ]
+  elif tessellation_kind == 'hyperbolic':
+    tessellation = _get_hyperbolic_demo_tessellation()
+    center = _resolve_hyperbolic_flat_center(tessellation, header)
+    basis = None
+    stable_pan_radius = (
+        tessellation.stable_radius * _HYPERBOLIC_PAN_SAFETY_FACTOR)
+    # No `select_frontier` call needed, same reasoning as `'generic'` --
+    # this mesh has no LOD tree in active use either. `nearby_faces`'s own
+    # hyperbolic branch already returns exactly `stable_faces`.
+    frontier = [
+        (face, lod_mesh_export.SectorAddress(tessellation.faces.index(face)))
+        for face in flat_mesh_export.nearby_faces(tessellation, center)
+    ]
   else:
     raise ValueError(f"Unknown tessellation kind: {tessellation_kind!r}")
 
@@ -364,6 +470,8 @@ def _handle_get_flat_mesh(header: dict) -> tuple[dict, bytes]:
   if orientation_out is not None:
     response_header['orientation'] = (
         flat_mesh_export.orientation_to_json(orientation_out))
+  if stable_pan_radius is not None:
+    response_header['stable_pan_radius'] = stable_pan_radius
   return response_header, positions + indices
 
 

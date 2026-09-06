@@ -111,6 +111,10 @@ export class FlatMapCameraController {
     this._controls.update();
 
     this._changeDebouncer = new ChangeDebouncer(this._controls);
+
+    // Unset (no clamping) unless a caller needs to keep panning inside a
+    // bounded region -- see `setMaxPanRadius`.
+    this._maxPanRadius = Infinity;
   }
 
   /**
@@ -122,9 +126,40 @@ export class FlatMapCameraController {
     return this._changeDebouncer.onChange(callback, debounceMs);
   }
 
+  /**
+   * Sets how far the camera may pan from wherever it was last `recenter()`-
+   * ed, in world units -- for a view (e.g. `HyperbolicTessellation`'s)
+   * whose projection is only numerically valid within a bounded radius of
+   * its own center. `Infinity` (the default) disables clamping.
+   *
+   * @param {number} radius
+   */
+  setMaxPanRadius(radius) {
+    this._maxPanRadius = radius;
+  }
+
   /** @param {number} _deltaSeconds */
   update(_deltaSeconds) {
     this._controls.update();
+
+    // Pin the camera at the boundary rather than letting a fast drag
+    // overshoot it -- `recenter()` always resets to exactly `(0, 0)`, so
+    // clamping distance-from-origin here is exactly "distance panned
+    // since the view was last centered." Deliberately not run through
+    // `_changeDebouncer.runSuppressed` (unlike `recenter()`): this only
+    // ever *constrains* where a real pan settles, it never introduces a
+    // spurious extra 'change' cycle on its own, so the debounced
+    // `onChange` should still fire normally once the drag pauses or
+    // releases.
+    const { x, y } = this.camera.position;
+    const distance = Math.hypot(x, y);
+    if (distance > this._maxPanRadius) {
+      const scale = this._maxPanRadius / distance;
+      this.camera.position.x *= scale;
+      this.camera.position.y *= scale;
+      this._controls.target.x = this.camera.position.x;
+      this._controls.target.y = this.camera.position.y;
+    }
   }
 
   /**

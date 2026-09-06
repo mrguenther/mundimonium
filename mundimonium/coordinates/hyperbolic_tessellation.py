@@ -777,6 +777,23 @@ class HyperbolicTessellation(Tessellation):
     """The current reference frame's anchor point (see `recenter`)."""
     return self._reference_point
 
+  @property
+  def stable_faces(self) -> frozenset[TessellationFace]:
+    """Every face in the current numerically-stable region (see
+    `_rebuild_stable_region`) -- within `max_stable_hops` combinatorial
+    hops of `reference_point`, and therefore both already built and safe
+    to run precision-sensitive Klein/Poincare math against."""
+    return frozenset(self._stable_faces)
+
+  @property
+  def stable_radius(self) -> float:
+    """The hyperbolic distance from `reference_point` to the farthest
+    face in `stable_faces` (see `_rebuild_stable_region`) -- a
+    conservative bound on how far a query can stray from `reference_point`
+    before it falls outside the numerically-stable region and triggers an
+    automatic recenter (see `_ensure_in_range`)."""
+    return self._stable_radius
+
   @staticmethod
   def to_poincare(vertex: TessellationVertex) -> tuple[float, float]:
     """`vertex`'s Poincare-disk `(x, y)` position, derived on demand from
@@ -1648,6 +1665,19 @@ class HyperbolicTessellation(Tessellation):
     from `center` directly: distance via the Poincare exponential map's
     inverse (`2 * arctanh(radius)`), direction via its angle.
 
+    The *distance* half of that (`hypot(x, y)`) is exact and reference-
+    frame-independent, matching the base class's own contract. The
+    *angle* is not independently absolute, though: both `center` and each
+    `target` are read via `_klein_of_barycentric`'s reference-frame-
+    relative coordinates before the Mobius transform is applied, and
+    composing that transform with an unrelated prior reference-to-
+    reference hop is not a pure translation -- it carries a rotation too.
+    So the angle is only meaningful relative to whichever reference frame
+    is active *at the time of this call*; it will differ between two
+    calls with the same `center`/`target` if something recentered the
+    tessellation in between (see `unflatten_point`, which depends on this
+    directly).
+
     Args:
       center: The point the flattened region is centered on.
       targets: The points to flatten, in any order, anywhere on the mesh.
@@ -1679,6 +1709,63 @@ class HyperbolicTessellation(Tessellation):
     x = distance * np.cos(angle)
     y = distance * np.sin(angle)
     return list(zip(x.tolist(), y.tolist()))
+
+  def unflatten_point(
+      self, center: IsometricPoint, x: Number, y: Number,
+  ) -> IsometricPoint:
+    """The mesh point `flatten_region(center, [that point])` would map to
+    `(x, y)` -- the exact inverse of `flatten_region`, for real-time
+    re-centering while panning a flat-mode view (see `server.py`'s own
+    `get_flat_mesh` handler).
+
+    Requires `center` to be the tessellation's *current* reference point
+    (see `recenter`) -- enforced here by recentering to it unconditionally
+    before doing anything else. This isn't just a precision nice-to-have:
+    `flatten_region`'s own `(x, y)` output is expressed relative to
+    whichever reference frame happens to be active *at the time of that
+    call* (its Mobius recentering is exact, but composing it with an
+    unrelated prior reference-to-reference hop is not a pure translation
+    -- it also carries a rotation, empirically confirmed by calling
+    `flatten_region` for the same `center`/target both with and without an
+    intervening `recenter` to an unrelated point and comparing the two
+    results: distances matched exactly, angles did not). So `(x, y)` is
+    only interpretable correctly by whichever call -- forward or backward
+    -- shares `flatten_region`'s notion of `center` being the reference at
+    the time.
+
+    No transported-orientation state needs to be carried forward across
+    calls the way `GenericTessellation.unflatten_point_and_transport_
+    orientation` does, though: as long as every caller recenters to its
+    own `center` immediately before flattening around it (which
+    `server.py`'s own request handling always does), each request
+    re-establishes the correct convention from scratch.
+
+    Args:
+      center: The point flat-mode panning was last centered on. Must
+        already be (or become, via the unconditional `recenter` below)
+        the tessellation's current reference point.
+      x: The panned-to view center's flattened x coordinate, relative to
+        `center`.
+      y: Same, for y.
+
+    Returns:
+      The mesh point at `(x, y)`.
+    """
+    self.recenter(center)
+    distance = math.hypot(x, y)
+    if distance < _BARYCENTRIC_EPSILON:
+      return center
+
+    angle = math.atan2(y, x)
+    poincare_radius = math.tanh(distance / 2.0)
+    recentered = cmath.rect(poincare_radius, angle)
+
+    center_klein = self._klein_of_barycentric(center.grid, center.barycentric)
+    center_poincare = _poincare_of_klein(*center_klein)
+    target_poincare = _from_origin_poincare(recentered, center_poincare)
+
+    u, v = _klein_of_poincare(target_poincare)
+    return self.new_point_at_coords(u, v)
 
   @override
   def point_to_3d_position(self, point: IsometricPoint) -> np.ndarray:
