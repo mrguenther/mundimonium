@@ -93,9 +93,9 @@ const DEMO_WORLDS = ['spherical', 'generic', 'hyperbolic'];
 // All four are placeholders, expected to need empirical tuning once
 // there's a real view to look at.
 const HYPERBOLIC_OVERVIEW_HALF_HEIGHT = 1.2;
-const HYPERBOLIC_CLOSEUP_HALF_HEIGHT = 1.0;
+const HYPERBOLIC_CLOSEUP_HALF_HEIGHT = 1.6;
 const HYPERBOLIC_CLOSEUP_EXIT_RADIUS = 2.2;
-const HYPERBOLIC_OVERVIEW_ENTER_CLOSEUP_RADIUS = 0.1;
+const HYPERBOLIC_OVERVIEW_ENTER_CLOSEUP_RADIUS = 0.8;
 
 function setStatus(text) {
   statusElement.textContent = text;

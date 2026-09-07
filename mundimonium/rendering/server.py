@@ -725,10 +725,21 @@ def dispatch(header: dict, body: bytes) -> tuple[dict, bytes]:
   try:
     return handler(header)
   except Exception as error:  # A request boundary: report, don't crash.
-    traceback.print_exc(file=sys.stderr)
+    return dispatch_exception(header, error, brief=False)
+
+
+def dispatch_exception(header: dict, exception: Exception, brief: bool = False):
+    if brief:
+      message = str(exception)
+      traceback.print_exc(file=sys.stderr)
+    else:
+      message = "".join(traceback.format_exception(exception))
+      print(message, file=sys.stderr)
+
     return (
-        {'type': 'error', 'id': header.get('id'), 'message': str(error)},
-        b'')
+        {'type': 'error', 'id': header.get('id'), 'message': message},
+        b'',
+    )
 
 
 def serve(input_stream: BinaryIO, output_stream: BinaryIO) -> None:
@@ -744,6 +755,13 @@ def serve(input_stream: BinaryIO, output_stream: BinaryIO) -> None:
     try:
       header, body = read_frame(input_stream)
     except EOFError:
+      # Exit cleanly.
       return
+    except Exception as exception:
+      # Report the exception to the frontend, then re-raise it (i.e. crash).
+      response_header, response_body = dispatch_exception(header, exception)
+      write_frame(output_stream, response_header, response_body)
+      raise
+
     response_header, response_body = dispatch(header, body)
     write_frame(output_stream, response_header, response_body)
