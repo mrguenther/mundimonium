@@ -506,11 +506,14 @@ def _blend_positions(
   *matrix* from occasionally landing outside the orientation-preserving
   set -- see git history), blending plain points has no such concern: any
   weighted average of points is just another point, always well-defined.
-  This is also what makes cross-anchor consistency exact rather than
-  approximate: any vertex shared by two faces/anchors resolves to the
-  same blended position regardless of which face or vertex is doing the
-  asking, since it's always the same underlying weighted average of the
-  same source positions -- see `GenericTessellation.flatten_region`.
+  This also makes a *repeated* blend of the same source positions exact:
+  the same weighted average of the same inputs always resolves to the
+  same result. It says nothing, though, about whether two *different*
+  anchors' own independently-relaxed positions for the same vertex agree
+  with each other in the first place -- they generally don't, without
+  deliberately aligning them first (see `_align_rotation`, used by
+  `RelaxableFace.aligned_corner_positions` and `RelaxableVertex._compute_
+  flattened_positions` before blending).
 
   Requires a non-empty `weighted_positions` with a strictly positive
   total weight.
@@ -519,6 +522,87 @@ def _blend_positions(
   return sum(
       weight * position for weight, position in weighted_positions
   ) / total_weight
+
+
+def _align_rotation(
+    reference: dict[TessellationVertex, np.ndarray],
+    reference_origin: np.ndarray,
+    other: dict[TessellationVertex, np.ndarray],
+    other_origin: np.ndarray,
+) -> np.ndarray:
+  """The best-fit 2D rotation that aligns `other`'s frame onto
+  `reference`'s frame, using whatever vertices the two dicts share as
+  correspondences.
+
+  Needed because `RelaxableFace`/`RelaxableVertex` each relax their own
+  local neighborhood independently, starting from their own unrelated
+  `_canonical_local_frame` -- two anchors' positions for the same distant
+  vertex can disagree by any angle, not just in shape. Blending such
+  positions directly (a plain weighted average) can then be dominated by
+  near-cancellation between disagreeing directions rather than by any
+  actual shape difference. Rotating `other` to best match `reference`
+  first removes that disagreement before blending.
+
+  Deliberately fits the *angle* each correspondence pair disagrees by,
+  independent of the pair's own distance from the origin -- not the
+  textbook 2D orthogonal Procrustes fit (minimizing summed *squared*
+  Euclidean distance between `reference[v] - reference_origin` and
+  `rotation @ (other[v] - other_origin)`), which weights each
+  correspondence by the square of its own distance from the origin. Since
+  distortion between two independent relaxations tends to grow with
+  distance from the anchor they're each pinned at, that squared-distance
+  weighting privileges exactly the least reliable correspondences,
+  letting a handful of distant, noisy ones dominate the fit and outvote
+  many nearby, trustworthy ones -- confirmed empirically: switching to
+  this distance-independent fit visibly reduced overlap between
+  neighboring flattened faces near this module's most demanding fixture,
+  the stellated icosahedron's valence-3/valence-10 neighborhood. (A
+  further refinement -- also weighting each correspondence by its own
+  hop-distance reliability -- was tried on top of this, but made no
+  further measurable difference there, so it was left out to keep this
+  function no more complex than what's actually earning its keep.)
+
+  Both the textbook fit and this one are closed-form: this one is the
+  circular mean of each correspondence pair's own angle difference,
+  `atan2(sum(sin(angle_i)), sum(cos(angle_i)))`, computed without ever
+  calling `atan2` per pair by accumulating each pair's already-unit-length
+  cross and dot products directly (`sin`/`cos` of a difference of angles,
+  by the standard angle-subtraction identities).
+
+  Returns the identity rotation if `reference` and `other` share no
+  vertex informative enough to fit against (every correspondence vector
+  in at least one of the two dicts is ~zero) -- not expected given
+  `RELAXATION_RADIUS`'s reach, but a safe default rather than an
+  `atan2(0, 0)` of pure noise.
+  """
+  cross_sum = 0.0
+  dot_sum = 0.0
+  for vertex, other_position in other.items():
+    reference_position = reference.get(vertex)
+    if reference_position is None:
+      continue
+    a = reference_position - reference_origin
+    b = other_position - other_origin
+    norm_a = math.hypot(a[0], a[1])
+    norm_b = math.hypot(b[0], b[1])
+    if norm_a < 1e-12 or norm_b < 1e-12:
+      continue
+    inverse_norms = 1.0 / (norm_a * norm_b)
+    # cross(b, a), not cross(a, b): maximizing sum(a . R(angle) b) over
+    # angle expands to `dot_sum * cos(angle) - cross(a, b) * sin(angle)`,
+    # maximized at `angle = atan2(-cross(a, b), dot_sum)` -- i.e.
+    # `atan2(cross(b, a), dot_sum)`, since cross is antisymmetric.
+    # Accumulating cross(b, a) directly here (rather than negating
+    # cross(a, b) at the atan2 call) keeps that call a plain, unadorned
+    # `atan2(cross_sum, dot_sum)`.
+    cross_sum += inverse_norms * (b[0] * a[1] - b[1] * a[0])
+    dot_sum += inverse_norms * (a[0] * b[0] + a[1] * b[1])
+
+  if abs(cross_sum) < 1e-12 and abs(dot_sum) < 1e-12:
+    return np.eye(2)
+  angle = math.atan2(cross_sum, dot_sum)
+  cos_angle, sin_angle = math.cos(angle), math.sin(angle)
+  return np.array([[cos_angle, -sin_angle], [sin_angle, cos_angle]])
 
 
 def _discover_nearby(
@@ -667,6 +751,9 @@ class RelaxableFace(TessellationFace, FlattenedPositionsMixin):
   """
 
   _nearby_faces: frozenset[TessellationFace] | None = None
+  _aligned_corner_positions: (
+      dict[TessellationVertex, dict[TessellationVertex, np.ndarray]] | None
+  ) = None
 
   @property
   def nearby_faces(self) -> frozenset[TessellationFace]:
@@ -681,9 +768,44 @@ class RelaxableFace(TessellationFace, FlattenedPositionsMixin):
       _ = self.flattened_positions  # Computes and caches _nearby_faces too.
     return self._nearby_faces
 
+  @property
+  def aligned_corner_positions(
+      self) -> dict[TessellationVertex, dict[TessellationVertex, np.ndarray]]:
+    """For each of this face's own 3 corner vertices, that corner's own
+    `flattened_positions` rotated in place to best align its axes with
+    this face's own -- see `_align_rotation` and `GenericTessellation.
+    _blended_positions_at`, the sole caller. Computed lazily and cached
+    until `invalidate_flattened_positions` is called.
+
+    Deliberately a rotation only, about each corner's own position (which
+    stays exactly `(0, 0)`, per `RelaxableVertex`'s own invariant) --
+    *not* a translation into this face's own frame. `_blended_positions_
+    at` blends several anchors that are each centered on a different
+    point (this face's own centroid, or one of its corners); the
+    fixed-point guarantee that querying `flatten_region` exactly at one
+    of those centers returns exactly `(0, 0)` depends on every anchor
+    dict still being centered on its own point when blended, with only
+    the *orientation* of its axes corrected to agree with the others.
+    """
+    if self._aligned_corner_positions is None:
+      own = self.flattened_positions
+      result: dict[TessellationVertex, dict[TessellationVertex, np.ndarray]] = {}
+      for corner in (self.vertex_b, self.vertex_s, self.vertex_d):
+        corner_positions = corner.flattened_positions
+        corner_origin = corner_positions[corner]
+        rotation = _align_rotation(
+            own, own[corner], corner_positions, corner_origin)
+        result[corner] = {
+            vertex: rotation @ (position - corner_origin)
+            for vertex, position in corner_positions.items()
+        }
+      self._aligned_corner_positions = result
+    return self._aligned_corner_positions
+
   def invalidate_flattened_positions(self) -> None:
     super().invalidate_flattened_positions()
     self._nearby_faces = None
+    self._aligned_corner_positions = None
 
   def _compute_flattened_positions(
       self) -> dict[TessellationVertex, np.ndarray]:
@@ -768,16 +890,37 @@ class RelaxableVertex(TessellationVertex, FlattenedPositionsMixin):
     places this vertex's own position at exactly `(0, 0)` -- and the
     blended result, being a weighted average of several copies of
     exactly `(0, 0)`, lands there exactly too.
+
+    Recentering only corrects *translation*: each adjacent face relaxed
+    its own neighborhood independently, starting from its own unrelated
+    `_canonical_local_frame`, so two adjacent faces' contributions can
+    still disagree in *rotation* -- left uncorrected, blending them
+    directly can be dominated by near-cancellation between disagreeing
+    directions rather than by any real shape difference (see `_align_
+    rotation`). Every contribution is therefore also rotated to best
+    align with a single reference (this vertex's first adjacent face, an
+    arbitrary but deterministic choice) before blending; the reference
+    face's own contribution needs no rotation.
     """
+    faces = self.adjacent_faces()
+    reference_positions = faces[0].flattened_positions
+    reference_origin = reference_positions[self]
+
     contributions: dict[
         TessellationVertex, list[tuple[float, np.ndarray]]] = (
         collections.defaultdict(list))
-    for face in self.adjacent_faces():
+    for face in faces:
       weight = math.sqrt(3.0) / float(face.side_length)
       face_positions = face.flattened_positions
       self_position = face_positions[self]
+      rotation = (
+          np.eye(2) if face is faces[0]
+          else _align_rotation(
+              reference_positions, reference_origin,
+              face_positions, self_position))
       for vertex, position in face_positions.items():
-        contributions[vertex].append((weight, position - self_position))
+        aligned = rotation @ (position - self_position)
+        contributions[vertex].append((weight, aligned))
 
     return {
         vertex: _blend_positions(weighted)
@@ -948,12 +1091,14 @@ class GenericTessellation(Tessellation):
     """The interpolated `flattened_positions` at `point` (on `face`) -- a
     blend of `face`'s own centroid-anchored positions and (unless `point`
     sits exactly at the centroid) 1-2 of `face`'s own vertices'
-    positions, per whichever of the 3 centroid-subdivided sub-triangles
-    (centroid + 2 of the face's 3 corners) `point` falls in. Only keys
-    present in `face`'s own dict are included -- a key present in a
-    vertex's dict but not `face`'s own is dropped, since `face` doesn't
-    consider that far vertex nearby regardless of what a neighboring
-    vertex picked up.
+    positions (rotation-aligned onto `face`'s own frame first, via `face.
+    aligned_corner_positions` -- see `_align_rotation` for why this
+    alignment matters), per whichever of the 3 centroid-subdivided
+    sub-triangles (centroid + 2 of the face's 3 corners) `point` falls
+    in. Only keys present in `face`'s own dict are included -- a key
+    present in a vertex's dict but not `face`'s own is dropped, since
+    `face` doesn't consider that far vertex nearby regardless of what a
+    neighboring vertex picked up.
 
     Degenerate positions (exactly at the centroid, at a vertex, or on
     any of the 3 dividing edges) all fall out of this same computation
@@ -978,10 +1123,11 @@ class GenericTessellation(Tessellation):
         GenericTessellation._local_2d_to_barycentric_in_frame(
             _local_xy(point), sub_frame))
 
+    aligned = face.aligned_corner_positions
     anchors = [
         (weight_centroid, face.flattened_positions),
-        (weight_1, corner_1.flattened_positions),
-        (weight_2, corner_2.flattened_positions),
+        (weight_1, aligned[corner_1]),
+        (weight_2, aligned[corner_2]),
     ]
 
     blended: dict[TessellationVertex, np.ndarray] = {}

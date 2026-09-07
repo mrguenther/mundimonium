@@ -575,17 +575,25 @@ def test_relaxable_vertex_blend_matches_manual_equal_weighted_average(
     relaxable_icosahedron):
   # Every face here has the same (default) side length, so `RelaxableVertex`'s
   # circumradius-based weighting should reduce to a plain equal-weighted
-  # average.
+  # average -- of each adjacent face's own contribution rotation-aligned
+  # onto the first adjacent face's own frame (see `_align_rotation`), not
+  # of the raw contributions directly.
   _, verts, faces = relaxable_icosahedron
   vertex = verts[0]
   target_vertex = verts[1]  # present in every adjacent face's own dict,
                              # since the default radius covers this whole mesh
   adjacent = vertex.adjacent_faces()
+  reference_positions = adjacent[0].flattened_positions
+  reference_origin = reference_positions[vertex]
 
   blended = vertex.flattened_positions[target_vertex]
   manual = generic_tessellation._blend_positions([
-      (1.0, face.flattened_positions[target_vertex]
-            - face.flattened_positions[vertex])
+      (1.0, (np.eye(2) if face is adjacent[0] else
+             generic_tessellation._align_rotation(
+                 reference_positions, reference_origin,
+                 face.flattened_positions, face.flattened_positions[vertex]))
+            @ (face.flattened_positions[target_vertex]
+               - face.flattened_positions[vertex]))
       for face in adjacent
   ])
   assert blended == pytest.approx(manual)
@@ -707,10 +715,12 @@ def test_flatten_region_degenerate_positions_match_direct_lookup(
   for key, position in face.flattened_positions.items():
     assert centroid_blend[key] == pytest.approx(position)
 
-  # Exactly at vertex_b: only vertex_b's own anchor should contribute.
+  # Exactly at vertex_b: only vertex_b's own anchor should contribute --
+  # rotation-aligned onto `face`'s own frame (see `_align_rotation`), not
+  # vertex_b's raw own positions directly.
   vertex_point = IsometricPoint(face, face.altitude, 0.0)
   vertex_blend = GenericTessellation._blended_positions_at(face, vertex_point)
-  for key, position in face.vertex_b.flattened_positions.items():
+  for key, position in face.aligned_corner_positions[face.vertex_b].items():
     if key not in face.flattened_positions:
       continue
     assert vertex_blend[key] == pytest.approx(position)
@@ -724,8 +734,8 @@ def test_flatten_region_degenerate_positions_match_direct_lookup(
     weighted = [
         (1.0, positions[key])
         for positions in (
-            face.vertex_b.flattened_positions,
-            face.vertex_s.flattened_positions)
+            face.aligned_corner_positions[face.vertex_b],
+            face.aligned_corner_positions[face.vertex_s])
         if key in positions
     ]
     if weighted:
