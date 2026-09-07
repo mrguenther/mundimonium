@@ -832,6 +832,7 @@ async function main() {
       // 'spherical': `orbitController`/`mesh`/`wireframe` persist across
       // every world switch, only their geometry/enabled state changes.
       if (previousWorld === 'generic') {
+        sceneManager.removeFromScene(surfaceController.focalPointMarker);
         surfaceController.dispose();
         surfaceController = null;
       } else if (previousWorld === 'hyperbolic') {
@@ -861,6 +862,7 @@ async function main() {
         orbitController.setEnabled(false);
         surfaceController = new SurfaceCameraController(
             sceneManager.renderer.domElement, meshData);
+        sceneManager.addToScene(surfaceController.focalPointMarker);
         sceneManager.setActiveController(surfaceController);
         surfaceController.onChange(() => {
           const h = surfaceController.hoverHeight;

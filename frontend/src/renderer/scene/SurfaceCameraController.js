@@ -16,11 +16,103 @@ const MIN_HOVER_HEIGHT_FACE_WIDTHS = 0.1;
 
 // How many pixels of vertical drag correspond to one full vertical field
 // of view's worth of world-space movement, mirrored horizontally by
-// aspect ratio -- see `_pixelDeltaToWorld`.
+// aspect ratio -- see `_pan`.
 const VERTICAL_FOV_DEGREES = 50;
 
+// `focalPointMarker`'s radius, as a fraction of the current hover height
+// `h` -- scaling with `h` (rather than a fixed world-space size) keeps its
+// on-screen size roughly constant as the camera zooms in/out, matching how
+// `_pan`'s own pixel-to-world conversion already scales with `h`.
+const FOCAL_POINT_MARKER_RADIUS_RATIO = 0.03;
+
+// Below this squared length, an angle-weighted (or, failing that, plain)
+// sum of a vertex's adjacent face normals is treated as degenerate -- see
+// `computeVertexNormals`'s own fallback. A placeholder threshold, not
+// expected to trigger on this project's current demo mesh.
+const VERTEX_NORMAL_DEGENERATE_LENGTH_SQ = 1e-6;
+
+// Safety cap on how many faces `_locateFace` will cross while walking a
+// single step -- see its own docstring for why this loops rather than
+// recurses. Generous relative to how many faces an ordinary drag step
+// crosses (usually 0-2) without being unbounded.
+const MAX_FACE_LOCATE_STEPS = 64;
+
+// The largest single sub-step `_applyLocalStep` will decompose onto a
+// face's own basis before possibly crossing into a neighbor and
+// switching to *its* basis instead, as a fraction of the current face's
+// own side length -- see `_applyLocalStep`'s own docstring for why a
+// large step needs to be subdivided at all.
+const MAX_STEP_FRACTION_OF_SIDE_LENGTH = 0.1;
+
+// Hard cap on how many sub-steps a single `_applyLocalStep` call will
+// take, regardless of how large `worldDelta` is -- keeps an unusually
+// large single pointer-move delta (a very fast drag) cheap, at the cost
+// of possibly under-subdividing it (rare in practice: an ordinary drag's
+// per-event pixel delta is already small).
+const MAX_STEPS_PER_PAN = 32;
+
 /**
- * Builds the static, per-triangle geometry a `SurfaceCameraController`
+ * One outward-facing "smoothed normal" per vertex -- an angle-weighted
+ * average of the flat normals of every face touching that vertex,
+ * normalized. Weighting by the angle each face subtends at the vertex
+ * (rather than a plain unweighted average) is the standard refinement for
+ * an irregular mesh: an unweighted average skews toward whichever faces
+ * happen to be more numerous or more acute at that vertex, less
+ * representative of the true local surface direction. This is the same
+ * idea `MeshLoader.js` already uses (via Three's own, area-weighted
+ * `computeVertexNormals()`) to smooth-shade the *rendered* mesh -- applied
+ * here to drive the camera's own viewing direction instead of lighting,
+ * independently (see the class docstring).
+ *
+ * Only needs `vertexFaces[v]`'s membership, not cyclic order -- a plain
+ * weighted sum doesn't care what order its terms arrive in. Confirmed via
+ * `mesh_export.py`'s own `faces_around_vertex` docstring: even its
+ * boundary-vertex fallback (when the fan doesn't close into a cycle) is
+ * still a *complete* list, just unordered -- so unlike this file's own
+ * previous dihedral-fan-chaining design, there's no boundary-vertex
+ * caveat here at all.
+ *
+ * @param {THREE.Vector3[]} vertexPositions
+ * @param {{ vertexIndices: number[], normal: THREE.Vector3 }[]} triangles
+ * @param {number[][]} vertexFaces
+ * @returns {THREE.Vector3[]}
+ */
+function computeVertexNormals(vertexPositions, triangles, vertexFaces) {
+  return vertexFaces.map((fan, vertexIndex) => {
+    const vertexPosition = vertexPositions[vertexIndex];
+    const weightedSum = new THREE.Vector3();
+    for (const faceIndex of fan) {
+      const triangle = triangles[faceIndex];
+      const slot = triangle.vertexIndices.indexOf(vertexIndex);
+      const otherA = vertexPositions[triangle.vertexIndices[(slot + 1) % 3]];
+      const otherB = vertexPositions[triangle.vertexIndices[(slot + 2) % 3]];
+      const edgeA = otherA.clone().sub(vertexPosition).normalize();
+      const edgeB = otherB.clone().sub(vertexPosition).normalize();
+      const angle = Math.acos(
+          THREE.MathUtils.clamp(edgeA.dot(edgeB), -1, 1));
+      weightedSum.addScaledVector(triangle.normal, angle);
+    }
+    if (weightedSum.lengthSq() > VERTEX_NORMAL_DEGENERATE_LENGTH_SQ) {
+      return weightedSum.normalize();
+    }
+    // Degenerate: the angle-weighted sum nearly cancels (e.g. a sharply
+    // folded valley where opposing faces point almost oppositely) -- fall
+    // back to a plain unweighted average, and if that's *also*
+    // degenerate, to the first adjacent face's own flat normal. Not
+    // expected to trigger on this project's current demo mesh; a safety
+    // net rather than a carefully-designed resolution.
+    const plainSum = fan.reduce(
+        (sum, f) => sum.add(triangles[f].normal), new THREE.Vector3());
+    if (plainSum.lengthSq() > VERTEX_NORMAL_DEGENERATE_LENGTH_SQ) {
+      return plainSum.normalize();
+    }
+    return triangles[fan[0]].normal.clone();
+  });
+}
+
+/**
+ * Builds the static, per-triangle geometry (and per-vertex smoothed
+ * normals -- see `computeVertexNormals`) a `SurfaceCameraController`
  * needs from a `getMesh` response's raw buffers -- computed once when the
  * mesh loads, not per frame, so panning never re-derives it.
  *
@@ -67,15 +159,58 @@ function buildSurfaceGraph(meshData) {
     });
   }
 
-  return { vertexPositions, triangles, vertexFaces };
+  const vertexNormals = computeVertexNormals(
+      vertexPositions, triangles, vertexFaces);
+
+  return { triangles, vertexNormals, vertexFaces };
 }
 
-/** The surface point (before the hover-height offset) for a face patch's
- * local `(u, v)` -- see `buildSurfaceGraph`'s `eX`/`eY` convention. */
+/** The surface point (before the hover-height offset) for local `(u, v)`
+ * -- see `buildSurfaceGraph`'s `eX`/`eY` convention. */
 function facePoint(triangle, u, v) {
   return triangle.origin.clone()
       .addScaledVector(triangle.eX, u)
       .addScaledVector(triangle.eY, v);
+}
+
+/** The 3D position of `triangle`'s own vertex at `slot` (0 = B, 1 = S,
+ * 2 = D -- see `buildSurfaceGraph`'s `eX`/`eY` convention), derived from
+ * the triangle's own cached geometry rather than a separate vertex
+ * lookup. */
+function triangleVertexPosition(triangle, slot) {
+  if (slot === 0) {
+    return triangle.origin.clone();
+  }
+  if (slot === 1) {
+    return facePoint(triangle, triangle.sideLength, 0);
+  }
+  return facePoint(triangle, triangle.sideLength / 2, triangle.altitude);
+}
+
+/**
+ * `fan`'s own face indices, reordered by hop-distance from `fromIndex`
+ * (a position *within* `fan`, not a face index itself) -- its two
+ * immediate neighbors first, then their neighbors, and so on outward,
+ * alternating direction at each distance; `fromIndex` itself is not
+ * included. Falls back to `fan`'s own raw order if `fromIndex` is `-1`
+ * (not found) -- see `_resolveVertexExit`'s own docstring for why this
+ * order (nearest first) matters, not just correctness.
+ */
+function vertexFanByHopDistance(fan, fromIndex) {
+  if (fromIndex === -1) {
+    return fan;
+  }
+  const n = fan.length;
+  const order = [];
+  for (let distance = 1; distance <= Math.floor(n / 2); distance++) {
+    const forward = fan[(fromIndex + distance) % n];
+    const backward = fan[(fromIndex - distance + n) % n];
+    order.push(forward);
+    if (backward !== forward) {
+      order.push(backward);
+    }
+  }
+  return order;
 }
 
 /** `vector` rotated by `angle` radians around unit vector `axis`
@@ -89,74 +224,65 @@ function rotateAroundAxis(vector, axis, angle) {
 }
 
 /**
- * The two exported-vertex indices `triangle` shares with its neighbor
- * across edge slot `edgeSlot` -- the edge opposite `triangle`'s own
- * vertex at that slot (see `mesh_export.py`'s own `adjacency` docstring).
+ * A unit vector along the edge shared by `triangleIndexA` and
+ * `triangleIndexB` (which must actually be edge-adjacent) -- the
+ * physical rotation axis for unfolding one face onto the other (see
+ * `_locateFace`'s own docstring). Sign is arbitrary (whichever endpoint
+ * order the slot lookup happens to give) and doesn't matter to any
+ * caller: `rotateAroundAxis(v, axis, angle)` and `rotateAroundAxis(v,
+ * -axis, -angle)` are the same rotation, and `dihedralRotationAngle`
+ * derives its own signed angle relative to whichever axis it's given.
  */
-function sharedEdgeVertices(triangle, edgeSlot) {
-  return triangle.vertexIndices.filter((_v, i) => i !== edgeSlot);
+function sharedEdgeAxis(graph, triangleIndexA, triangleIndexB) {
+  const triangleA = graph.triangles[triangleIndexA];
+  const slot = triangleA.neighbors.indexOf(triangleIndexB);
+  const otherSlots = [0, 1, 2].filter((s) => s !== slot);
+  const posA = triangleVertexPosition(triangleA, otherSlots[0]);
+  const posB = triangleVertexPosition(triangleA, otherSlots[1]);
+  return posB.sub(posA).normalize();
 }
 
 /**
- * Precomputes the geometry of the edge between `triangle` and its
- * neighbor across `edgeSlot`: the two shared vertex positions, a
- * canonical axis along the edge, and the signed rotation (`sign`,
- * `angle`) around that axis taking `triangle.normal` to the neighbor's
- * own normal.
+ * The signed rotation angle about `edgeAxis` that takes `normalA` to
+ * `normalB` -- i.e. `rotateAroundAxis(normalA, edgeAxis, angle)` equals
+ * `normalB` exactly.
  *
- * The two candidate sweep directions around an edge (the short arc
- * between the two normals, or its reflex complement) were both
- * considered for distinguishing convex from concave edges, matching an
- * intuitive "rolling ball" picture. Checked directly against this app's
- * own demo mesh's known convex and concave edges, though, the short arc
- * landed in a geometrically plausible position (offset toward/away from
- * the mesh's own center consistently with the edge's convexity) in both
- * cases, while a clean idealized model that would justify the reflex
- * rule for concave edges broke down entirely at the demo mesh's actual
- * notch angle. Given this is a visual-smoothness detail, not a
- * correctness-critical one, this implementation always takes the short
- * arc -- simpler, well-defined everywhere, and not visibly wrong on the
- * one real mesh this has been checked against. Revisit if panning across
- * a concave edge ever looks visibly wrong in practice.
- *
- * @returns {{ vertexIndices: [number, number], axis: THREE.Vector3,
- *   sign: number, angle: number } | null} `null` for a boundary edge
- *   (`edgeSlot`'s neighbor is `-1`).
+ * Recovered via `atan2` against an in-plane companion axis rather than
+ * `acos(dot(normalA, normalB))` (which can't recover the *sign*, only
+ * the magnitude) combined with a cross-product-derived axis (which
+ * becomes numerically unreliable as the angle between the normals
+ * approaches 180 degrees, since the cross product's own magnitude
+ * vanishes there even though the angle itself is perfectly well-defined)
+ * -- this mesh has folds sharp enough for that to matter.
  */
-function computeEdgeGeometry(graph, triangleIndex, edgeSlot) {
-  const triangle = graph.triangles[triangleIndex];
-  const neighborIndex = triangle.neighbors[edgeSlot];
-  if (neighborIndex === -1) {
-    return null;
-  }
-  const neighbor = graph.triangles[neighborIndex];
-  const vertexIndices = sharedEdgeVertices(triangle, edgeSlot);
-  const [posA, posB] = vertexIndices.map((v) => graph.vertexPositions[v]);
-  const axis = posB.clone().sub(posA).normalize();
-
-  const cross = new THREE.Vector3().crossVectors(
-      triangle.normal, neighbor.normal);
-  const sign = Math.sign(cross.dot(axis)) || 1;
-  const cosAngle = THREE.MathUtils.clamp(
-      triangle.normal.dot(neighbor.normal), -1, 1);
-  const angle = Math.acos(cosAngle);
-
-  return { neighborIndex, vertexIndices, axis, sign, angle };
+function dihedralRotationAngle(normalA, normalB, edgeAxis) {
+  const inPlaneAxis = new THREE.Vector3()
+      .crossVectors(edgeAxis, normalA).normalize();
+  const cosAngle = normalB.dot(normalA);
+  const sinAngle = normalB.dot(inPlaneAxis);
+  return Math.atan2(sinAngle, cosAngle);
 }
 
 /**
  * A camera that hugs a triangle mesh's surface at a fixed hover height,
- * panning directly across faces and sweeping smoothly around edges and
- * vertices (convex or concave) rather than orbiting a fixed target --
- * see the plan's own "surface-following camera" design. Implements the
- * same `{ camera, update(deltaSeconds), onChange(callback), dispose() }`
- * shape as `OrbitCameraController`/`FlatMapCameraController`, so
- * `SceneManager`/`index.js` don't need to know it works differently
+ * panning across faces with a continuously-varying viewing direction --
+ * see `computeVertexNormals`/`_currentNormal`'s own docstrings for how.
+ * Implements the same `{ camera, update(deltaSeconds), onChange(callback),
+ * dispose() }` shape as `OrbitCameraController`/`FlatMapCameraController`,
+ * so `SceneManager`/`index.js` don't need to know it works differently
  * under the hood.
  *
  * Can't reuse `OrbitControls` -- its math assumes orbiting a fixed
  * target, not walking a surface -- so pointer events are handled here
  * directly instead.
+ *
+ * Also owns `focalPointMarker`, a small red sphere at the camera's own
+ * focal point (`_currentSurfacePoint()`, the point on the mesh the
+ * camera is hovering above/looking at) -- a debugging aid for spotting
+ * exactly where the camera's motion is misbehaving during a pan. The
+ * caller (`index.js`) is responsible for adding it to the scene and
+ * removing it on disposal, matching how every other piece of scene
+ * composition is owned outside this class.
  */
 export class SurfaceCameraController {
   /**
@@ -178,10 +304,13 @@ export class SurfaceCameraController {
         VERTICAL_FOV_DEGREES,
         window.innerWidth / window.innerHeight, 0.01, 1000);
 
+    this.focalPointMarker = new THREE.Mesh(
+        new THREE.SphereGeometry(1, 16, 12),
+        new THREE.MeshBasicMaterial({ color: 0xff0000 }));
+
     const startTriangle = this._graph.triangles[initialState.faceIndex ?? 0];
     const defaultH = startTriangle.sideLength * DEFAULT_HOVER_HEIGHT_FACE_WIDTHS;
     this._state = {
-      patch: 'face',
       faceIndex: initialState.faceIndex ?? 0,
       u: initialState.u ?? startTriangle.sideLength / 2,
       v: initialState.v ?? startTriangle.altitude / 3,
@@ -220,6 +349,10 @@ export class SurfaceCameraController {
   /** @param {boolean} enabled */
   setEnabled(enabled) {
     this._enabled = enabled;
+    // Hidden rather than removed from the scene while disabled (e.g. flat
+    // mode) -- its position stops updating too, so leaving it visible
+    // would show a stale, misleading point.
+    this.focalPointMarker.visible = enabled;
   }
 
   dispose() {
@@ -232,9 +365,7 @@ export class SurfaceCameraController {
 
   /**
    * The current position as a flat-mode entry point, for the caller to
-   * pass into `getFlatMesh`/`getFlatItems`'s own `center` field. Exact
-   * regardless of which patch type is currently active -- an edge or
-   * vertex patch position is projected onto its own nearest face first.
+   * pass into `getFlatMesh`/`getFlatItems`'s own `center` field.
    *
    * `IsometricPoint(face, b, s)`'s own `(b, s)` is a *different*
    * convention from this file's own local `(u, v)` (see `buildSurfaceGraph`'s
@@ -250,17 +381,16 @@ export class SurfaceCameraController {
    * @returns {{ face: number, b: number, s: number }}
    */
   getFlatModeCenter() {
-    const { faceIndex, u, v } = this._faceLocalPosition();
+    const { faceIndex, u, v } = this._state;
     const triangle = this._graph.triangles[faceIndex];
     const { wb, ws } = this._faceBarycentric(triangle, u, v);
     return { face: faceIndex, b: wb * triangle.altitude, s: ws * triangle.altitude };
   }
 
   /**
-   * Resets this controller to a fresh face-patch state at the given
-   * face-local position -- used when *exiting* flat mode, to resume
-   * exactly where the flat view's own last center was, rather than some
-   * arbitrary default position.
+   * Resets this controller to the given face-local position -- used when
+   * *exiting* flat mode, to resume exactly where the flat view's own last
+   * center was, rather than some arbitrary default position.
    *
    * @param {number} faceIndex
    * @param {number} isometricB - In `IsometricPoint(face, b, s)`'s own
@@ -276,7 +406,7 @@ export class SurfaceCameraController {
     const wd = 1 - wb - ws;
     const u = ws * triangle.sideLength + (wd * triangle.sideLength) / 2;
     const v = wd * triangle.altitude;
-    this._state = { patch: 'face', faceIndex, u, v, h };
+    this._state = { faceIndex, u, v, h };
     this._updateCameraFromState();
   }
 
@@ -285,93 +415,56 @@ export class SurfaceCameraController {
     return this._state.h;
   }
 
-  /** The `side_length` of whichever face the camera is currently nearest
-   * to -- used by `index.js` for the flat-mode threshold check. */
+  /** The `side_length` of the face the camera is currently over -- used
+   * by `index.js` for the flat-mode threshold check. */
   get currentFaceSideLength() {
-    return this._graph.triangles[this._faceLocalPosition().faceIndex]
-        .sideLength;
+    return this._graph.triangles[this._state.faceIndex].sideLength;
   }
 
   // -------------------------------------------------------------------
   // Position/orientation from state
   // -------------------------------------------------------------------
 
-  /**
-   * The current `(faceIndex, u, v)` on the nearest face's own canonical
-   * frame, regardless of which patch type is actually active -- computed
-   * by projecting the current 3D surface point (without the hover-height
-   * offset) into that face's frame.
-   */
-  _faceLocalPosition() {
-    if (this._state.patch === 'face') {
-      return {
-        faceIndex: this._state.faceIndex, u: this._state.u, v: this._state.v,
-      };
-    }
-    const surfacePoint = this._currentSurfacePoint();
-    const faceIndex = this._nearestFaceIndex();
-    const triangle = this._graph.triangles[faceIndex];
-    const local = surfacePoint.clone().sub(triangle.origin);
-    return {
-      faceIndex, u: local.dot(triangle.eX), v: local.dot(triangle.eY),
-    };
-  }
-
-  /** The face this controller's current edge/vertex patch is nearest to. */
-  _nearestFaceIndex() {
-    if (this._state.patch === 'face') {
-      return this._state.faceIndex;
-    }
-    if (this._state.patch === 'edge') {
-      return this._state.triangleIndex;
-    }
-    // Vertex patch: the anchor face in the vertex's own cyclic fan.
-    return this._graph.vertexFaces[this._state.vertexIndex][
-        this._state.faceSlot];
-  }
-
-  /** The current surface point (before the hover-height offset), for
-   * whichever patch type is active. */
+  /** The current surface point (before the hover-height offset). */
   _currentSurfacePoint() {
-    const state = this._state;
-    if (state.patch === 'face') {
-      return facePoint(this._graph.triangles[state.faceIndex], state.u, state.v);
-    }
-    if (state.patch === 'edge') {
-      const edge = computeEdgeGeometry(
-          this._graph, state.triangleIndex, state.edgeSlot);
-      const [posA, posB] = edge.vertexIndices.map(
-          (v) => this._graph.vertexPositions[v]);
-      return posA.clone().lerp(posB, state.u);
-    }
-    // Vertex patch.
-    return this._graph.vertexPositions[state.vertexIndex];
+    const { faceIndex, u, v } = this._state;
+    return facePoint(this._graph.triangles[faceIndex], u, v);
   }
 
-  /** The current outward normal direction, for whichever patch type is
-   * active. */
+  /**
+   * The current viewing direction: the current face's three vertex
+   * normals (see `computeVertexNormals`), barycentrically interpolated at
+   * `(u, v)` and renormalized -- Phong normal interpolation. This is what
+   * makes the surface, as far as the camera's orientation is concerned,
+   * appear continuously curved rather than faceted: adjacent faces share
+   * the same two vertex normals along their common edge, so this matches
+   * exactly from both sides, and every face touching a vertex converges
+   * to that vertex's own single normal there -- no special-casing needed
+   * at edges or vertices at all (unlike this file's previous
+   * edge/vertex-patch design).
+   */
   _currentNormal() {
-    const state = this._state;
-    if (state.patch === 'face') {
-      return this._graph.triangles[state.faceIndex].normal;
-    }
-    if (state.patch === 'edge') {
-      const edge = computeEdgeGeometry(
-          this._graph, state.triangleIndex, state.edgeSlot);
-      const startNormal = this._graph.triangles[state.triangleIndex].normal;
-      return rotateAroundAxis(
-          startNormal, edge.axis, edge.sign * edge.angle * state.t);
-    }
-    // Vertex patch: blend between consecutive faces in the vertex's own
-    // cyclic fan -- the sketch's own explicitly-authorized approximation
-    // (a normal blend, not an exact spherical-polygon boundary).
-    const fan = this._graph.vertexFaces[state.vertexIndex];
-    const normalA = this._graph.triangles[fan[state.faceSlot]].normal;
-    const normalB = this._graph.triangles[
-        fan[(state.faceSlot + 1) % fan.length]].normal;
-    return normalA.clone().lerp(normalB, state.blendT).normalize();
+    const { faceIndex, u, v } = this._state;
+    const triangle = this._graph.triangles[faceIndex];
+    const { wb, ws, wd } = this._faceBarycentric(triangle, u, v);
+    const [nb, ns, nd] = triangle.vertexIndices.map(
+        (vertexIndex) => this._graph.vertexNormals[vertexIndex]);
+    return nb.clone().multiplyScalar(wb)
+        .addScaledVector(ns, ws)
+        .addScaledVector(nd, wd)
+        .normalize();
   }
 
+  /**
+   * Positions/orients the camera from the current state, then carries
+   * the *rendered* `up` forward continuously via a rotation-minimizing
+   * update: rotate the previous frame's own `up` by whatever rotation
+   * took the previous `_currentNormal()` to the current one. Works
+   * because `_currentNormal()` is itself continuous (see its own
+   * docstring) -- incrementally rotating `up` by the same rotation the
+   * normal just underwent keeps the camera's own roll continuous too,
+   * regardless of how far a single step moves.
+   */
   _updateCameraFromState() {
     const surfacePoint = this._currentSurfacePoint();
     const normal = this._currentNormal();
@@ -379,15 +472,35 @@ export class SurfaceCameraController {
         normal, this._state.h);
     this.camera.position.copy(position);
 
-    // Look straight down at the surface point directly below, with `up`
-    // taken from the current face's own `+v` axis (continuous across a
-    // face's own interior by construction; see this file's own
-    // docstring for the accepted small roll discontinuity at a patch
-    // transition).
-    const upHint = this._state.patch === 'face'
-        ? this._graph.triangles[this._state.faceIndex].eY
-        : new THREE.Vector3(0, 1, 0);
-    this.camera.up.copy(upHint);
+    this.focalPointMarker.position.copy(surfacePoint);
+    this.focalPointMarker.scale.setScalar(
+        this._state.h * FOCAL_POINT_MARKER_RADIUS_RATIO);
+
+    if (this._visualUp === undefined) {
+      // First-ever call: bootstrap from the starting face's own `eY` --
+      // only approximately orthogonal to the true interpolated normal,
+      // corrected below the same as every later frame.
+      this._visualUp = this._graph.triangles[this._state.faceIndex]
+          .eY.clone();
+    } else {
+      const rotationAxis = new THREE.Vector3()
+          .crossVectors(this._previousNormal, normal);
+      if (rotationAxis.lengthSq() > 1e-12) {
+        const rotationAngle = Math.acos(THREE.MathUtils.clamp(
+            this._previousNormal.dot(normal), -1, 1));
+        this._visualUp = rotateAroundAxis(
+            this._visualUp, rotationAxis.normalize(), rotationAngle);
+      }
+    }
+    // Re-orthogonalize against the current normal every time (not just
+    // the rotate-forward branch) -- corrects both the bootstrap frame's
+    // only-approximate `eY` and ordinary floating-point drift.
+    this._visualUp
+        .addScaledVector(normal, -this._visualUp.dot(normal))
+        .normalize();
+    this._previousNormal = normal.clone();
+
+    this.camera.up.copy(this._visualUp);
     this.camera.lookAt(surfacePoint);
   }
 
@@ -433,7 +546,7 @@ export class SurfaceCameraController {
     }
     event.preventDefault();
     const zoomFactor = Math.exp(event.deltaY * 0.001);
-    const minH = this._graph.triangles[this._nearestFaceIndex()].sideLength
+    const minH = this._graph.triangles[this._state.faceIndex].sideLength
         * MIN_HOVER_HEIGHT_FACE_WIDTHS;
     this._state.h = Math.max(minH, this._state.h * zoomFactor);
     this._updateCameraFromState();
@@ -441,8 +554,50 @@ export class SurfaceCameraController {
   }
 
   /**
-   * Converts a screen-space pixel drag `(dx, dy)` into a local `(du, dv)`
-   * step and applies it, transitioning between patch types as needed.
+   * `{ right, up }` -- an orthonormal basis spanning `triangle`'s own
+   * flat plane, used to convert a pixel drag into a `(du, dv)` step
+   * within that specific face. Built by *projecting* `_visualUp` onto
+   * the plane (removing whatever component it has along the face's own
+   * flat normal, then renormalizing), not by decomposing a delta that
+   * was built in some other plane -- see `_pan`'s own docstring for why
+   * that distinction is the actual fix for this method's history.
+   *
+   * `_visualUp` is deliberately the *exact same* vector
+   * `_updateCameraFromState` renders `camera.up` from: "drag right"
+   * needs to mean the same thing on screen no matter which face it's
+   * currently being interpreted against or how many faces a drag has
+   * crossed, and the only way to *guarantee* that is to interpret the
+   * drag using the identical vector that determines what's actually
+   * rendered, rather than a second, separately-tracked one. This part of
+   * the design went through two wrong attempts before landing here:
+   * - Each face's own *raw* `(eX, eY)` has no attenuation risk, but is
+   *   independently authored per face (whatever `mesh_export.py`'s own
+   *   vertex winding happens to produce), with no relationship between
+   *   neighbors at all -- so "screen right", read off a different face's
+   *   own raw axes after every crossing, could rotate by an arbitrary
+   *   angle including 180 degrees, becoming "screen left" and sending
+   *   the drag straight back the way it came.
+   * - A *separate* continuously-transported vector (anchored to each
+   *   face's own flat normal) fixed that, but not the underlying
+   *   problem: transported independently of `_visualUp` (anchored to the
+   *   smoothed normal instead), the two could drift out of alignment
+   *   with each other over a sequence of crossings even though each was
+   *   individually continuous -- so the drag's own internal bookkeeping
+   *   could stay perfectly smooth while what actually got *rendered*
+   *   still visibly changed direction relative to it.
+   */
+  _tangentBasisForTriangle(triangle) {
+    const flatNormal = triangle.normal;
+    const up = this._visualUp.clone()
+        .addScaledVector(flatNormal, -this._visualUp.dot(flatNormal))
+        .normalize();
+    const right = new THREE.Vector3().crossVectors(up, flatNormal).normalize();
+    return { right, up };
+  }
+
+  /**
+   * Converts a screen-space pixel drag `(dx, dy)` into a world-space
+   * step and applies it via `_applyLocalStep`.
    *
    * The pixel-to-world conversion uses the same similar-triangles
    * relationship a hovering perspective camera implies: at hover height
@@ -450,7 +605,18 @@ export class SurfaceCameraController {
    * corresponds to `2 * h * tan(fov / 2) / screenHeightPixels` world
    * units of tangential movement (horizontal analogously, scaled by
    * aspect ratio) -- this keeps pan speed visually consistent across
-   * patch types and zoom levels.
+   * zoom levels.
+   *
+   * Deliberately passes the raw pixel deltas (and this conversion
+   * factor) through to `_applyLocalStep` rather than building one 3D
+   * `worldDelta` vector here: `_tangentBasisForTriangle` depends on
+   * *which* face's plane it's projecting onto, so a single upfront
+   * `worldDelta` (built against only the starting face) would still need
+   * reprojecting for every face a multi-face drag crosses -- exactly the
+   * lossy step an earlier version of this design tried to patch after
+   * the fact with a rescale. Recomputing the tangent basis fresh for
+   * whichever face is current, once per sub-step, means every sub-step's
+   * `(du, dv)` is exact by construction, with nothing to correct for.
    */
   _pan(dxPixels, dyPixels) {
     const h = this._state.h;
@@ -460,87 +626,201 @@ export class SurfaceCameraController {
     const worldPerPixelX = worldPerPixelY
         * (this._domElement.clientWidth / this._domElement.clientHeight);
 
-    // Screen `+x` is the camera's own local `+x` (right); screen `+y`
-    // (downward) is the camera's own local `-y` (up), matching how a
-    // drag "down" should move the view "up" relative to the world (the
-    // same convention `OrbitControls`' own panning uses).
-    const cameraRight = new THREE.Vector3(1, 0, 0)
-        .applyQuaternion(this.camera.quaternion);
-    const cameraUp = new THREE.Vector3(0, 1, 0)
-        .applyQuaternion(this.camera.quaternion);
-    const worldDelta = cameraRight.multiplyScalar(-dxPixels * worldPerPixelX)
-        .addScaledVector(cameraUp, dyPixels * worldPerPixelY);
-
-    this._applyLocalStep(worldDelta);
+    this._applyLocalStep(dxPixels, dyPixels, worldPerPixelX, worldPerPixelY);
     this._updateCameraFromState();
     this._dispatcher.dispatchEvent({ type: 'change' });
   }
 
   /**
-   * Applies a world-space tangential step to the current patch, in local
-   * `(du, dv)` terms, transitioning to a neighboring patch if the step
-   * carries the position outside the current one's valid domain.
+   * Applies a screen-space pixel drag to the current position, walking
+   * across face boundaries as needed via `_locateFace`.
+   *
+   * Applied in several small sub-steps rather than one big one so that
+   * `_tangentBasisForTriangle` gets re-evaluated against `_visualUp`
+   * partway through a large, multi-face drag, not just once at the
+   * start. `_locateFace` itself already crosses any number of faces
+   * correctly regardless of step size (see its own docstring), but its
+   * "unfold across the shared edge" technique only carries forward
+   * whatever direction it's given -- a single huge step would commit to
+   * the *starting* face's own tangent basis and propagate that direction
+   * via pure flat-geometry rotation the rest of the way, without ever
+   * re-consulting `_visualUp` again until the step finishes. Sub-stepping
+   * keeps the drag's own direction tied to `_visualUp` throughout the
+   * walk, not just at its start.
+   *
+   * Each sub-step recomputes `_tangentBasisForTriangle` fresh for
+   * whichever face is *current* at that point, rather than reusing one
+   * `worldDelta` built against a single face and decomposing it onto
+   * every face a multi-face drag happens to cross: a fixed `worldDelta`,
+   * projected onto a face its own basis wasn't built from, can lose most
+   * of its magnitude near enough curvature.
+   *
+   * *Rescaling* that projection back up (an earlier version of this
+   * method did) doesn't really fix it, since a projection that's mostly
+   * cancellation is mostly rounding noise, and rescaling amplifies that
+   * noise to full strength instead of the intended direction -- confirmed
+   * directly via a diagnostic showing rescale factors as high as ~13x
+   * (i.e. over 90% of the projected step was noise), the kind of bug a
+   * plain "did it eventually cover the total distance" check doesn't
+   * catch, since the net distance can look fine while the
+   * moment-to-moment direction is erratic, reading as "can't reliably
+   * steer into that face" even though nothing is technically stuck.
+   * Computing the basis directly in whichever plane is current sidesteps
+   * the problem instead of correcting for it after the fact: the
+   * projection is exact by construction, so there's nothing left to lose
+   * or to amplify.
    */
-  _applyLocalStep(worldDelta) {
-    const state = this._state;
-    if (state.patch === 'face') {
-      const triangle = this._graph.triangles[state.faceIndex];
+  _applyLocalStep(dxPixels, dyPixels, worldPerPixelX, worldPerPixelY) {
+    const totalLength = Math.hypot(
+        dxPixels * worldPerPixelX, dyPixels * worldPerPixelY);
+    if (totalLength < 1e-12) {
+      return;
+    }
+    const startSideLength = this._graph.triangles[this._state.faceIndex]
+        .sideLength;
+    const maxStepLength = startSideLength * MAX_STEP_FRACTION_OF_SIDE_LENGTH;
+    const stepCount = Math.min(MAX_STEPS_PER_PAN,
+        Math.max(1, Math.ceil(totalLength / maxStepLength)));
+    const dxSub = dxPixels / stepCount;
+    const dySub = dyPixels / stepCount;
+    for (let i = 0; i < stepCount; i++) {
+      const { faceIndex, u, v } = this._state;
+      const triangle = this._graph.triangles[faceIndex];
+      // Screen `+x` is `right`; screen `+y` (downward) is `-up`, matching
+      // how a drag "down" should move the view "up" relative to the
+      // world (the same convention `OrbitControls`' own panning uses).
+      const { right, up } = this._tangentBasisForTriangle(triangle);
+      const worldDelta = right.clone()
+          .multiplyScalar(-dxSub * worldPerPixelX)
+          .addScaledVector(up, dySub * worldPerPixelY);
       const du = worldDelta.dot(triangle.eX);
       const dv = worldDelta.dot(triangle.eY);
-      this._stepWithinFace(state.faceIndex, state.u + du, state.v + dv);
-      return;
+      this._locateFace(faceIndex, u, v, du, dv);
     }
-    if (state.patch === 'edge') {
-      const edge = computeEdgeGeometry(
-          this._graph, state.triangleIndex, state.edgeSlot);
-      const along = edge.vertexIndices.map(
-          (v) => this._graph.vertexPositions[v]);
-      const edgeLength = along[1].distanceTo(along[0]);
-      const axisStep = worldDelta.dot(edge.axis) / edgeLength;
-      // Movement perpendicular to the edge axis (i.e. "off the seam" back
-      // onto one of the two adjacent faces) re-enters that face directly,
-      // projected via the current surface point plus the perpendicular
-      // component of `worldDelta`.
-      const perpendicular = worldDelta.clone()
-          .addScaledVector(edge.axis, -worldDelta.dot(edge.axis));
-      if (perpendicular.length() > 1e-9) {
-        const surfacePoint = this._currentSurfacePoint()
-            .addScaledVector(edge.axis, axisStep * edgeLength)
-            .add(perpendicular);
-        this._enterFaceAtPoint(state.triangleIndex, surfacePoint);
-        return;
-      }
-      this._stepAlongEdge(state, state.u + axisStep);
-      return;
-    }
-    // Vertex patch: any pan moves off the vertex immediately, resolved by
-    // re-entering whichever face the resulting surface point projects
-    // onto most naturally.
-    const surfacePoint = this._currentSurfacePoint().add(worldDelta);
-    this._enterFaceAtPoint(this._nearestFaceIndex(), surfacePoint);
   }
 
-  /** Moves within (or transitions out of) a face patch to local `(u, v)`. */
-  _stepWithinFace(faceIndex, u, v) {
+  /**
+   * Walks local step `(du, dv)` from `(u, v)` on `startFaceIndex`,
+   * crossing into neighboring faces as needed -- a single step can cross
+   * several faces at once (a fast pan, or a large jump). Loops rather
+   * than recurses: an unbounded recursive cascade (this file's own
+   * previous design) has no cap on how many faces a single step can walk
+   * through, exactly the shape of bug this file's redesign started from
+   * in the first place (indefinite bouncing between patches). Capped at
+   * `MAX_FACE_LOCATE_STEPS` -- if still outside after that many crossings
+   * (shouldn't happen on this mesh for an ordinary drag), clamps into
+   * whatever face it last tried rather than looping forever.
+   *
+   * Ordinary edge crossings (a single negative barycentric weight)
+   * "unfold" the *remaining* portion of `(du, dv)` across the shared
+   * edge rather than naively reprojecting the extended target point onto
+   * the neighbor's own, differently-oriented plane. An earlier version
+   * of this method did the latter, and it doesn't correctly represent
+   * "keep going straight" once the dihedral fold is sharp enough (this
+   * mesh's isn't gentle): the extended point lies in the *current* face's
+   * own flat plane, extrapolated past its boundary, which is not the
+   * same thing as a point actually further along the mesh's own surface,
+   * and reprojecting it via plain dot products silently discards
+   * whatever out-of-plane component it has.
+   *
+   * Confirmed directly as a real bug via a diagnostic that bypassed
+   * pixel-drag simulation entirely: for 84 of this mesh's 180 directed
+   * face-neighbor pairs, walking straight from a face's own centroid
+   * through the opposite edge's midpoint and well past it never actually
+   * crossed at all -- each attempt reprojected to a point that, on the
+   * neighbor's own plane, *still* tested as being on the near side,
+   * sending it back across the same edge, converging geometrically on
+   * the edge itself rather than progressing (a stable, self-reinforcing
+   * oscillation, not a one-off glitch: dragging further in the same
+   * direction doesn't help, since every attempt re-triggers the
+   * identical round trip).
+   *
+   * The correct technique -- unfolding, i.e. rotating the remaining
+   * direction of travel by the exact dihedral angle between the two
+   * faces' own flat normals about their shared edge axis before
+   * continuing on the neighbor -- is the standard way to walk a straight
+   * line across a folded triangle mesh, and is exact regardless of how
+   * sharp the fold is (see `dihedralRotationAngle`'s own docstring for
+   * the numerically robust way this angle is recovered).
+   *
+   * Vertex crossings (two negative weights, a corner cut) are handled
+   * separately by `_resolveVertexExit`, which searches for a genuinely
+   * containing face directly rather than trying to continue a straight
+   * line (there's no single well-defined "unfolded direction" once more
+   * than one edge is involved) -- any leftover `(du, dv)` is simply
+   * dropped after a vertex resolution.
+   */
+  _locateFace(startFaceIndex, u, v, du, dv) {
+    let faceIndex = startFaceIndex;
+    for (let step = 0; step < MAX_FACE_LOCATE_STEPS; step++) {
+      const triangle = this._graph.triangles[faceIndex];
+      const targetU = u + du;
+      const targetV = v + dv;
+      const exit = this._exitedBoundary(this._faceBarycentric(triangle, targetU, targetV));
+      if (exit === null) {
+        this._state = { faceIndex, u: targetU, v: targetV, h: this._state.h };
+        return;
+      }
+      if (exit.type === 'vertex') {
+        const vertexIndex = triangle.vertexIndices[exit.slot];
+        const resolved = this._resolveVertexExit(
+            vertexIndex, faceIndex, targetU, targetV);
+        faceIndex = resolved.faceIndex;
+        u = resolved.u;
+        v = resolved.v;
+        du = 0;
+        dv = 0;
+        continue;
+      }
+      const neighborIndex = triangle.neighbors[exit.slot];
+      if (neighborIndex === -1) {
+        u = targetU;
+        v = targetV;
+        du = 0;
+        dv = 0;
+        break; // mesh boundary -- clamp below
+      }
+
+      // Find the fraction `t` (0..1) along (u,v) -> (targetU,targetV)
+      // where the crossed edge's own weight hits exactly 0 -- barycentric
+      // weights are affine in (u, v), so this is a plain linear
+      // interpolation to a zero-crossing.
+      const startWeights = this._faceBarycentric(triangle, u, v);
+      const targetWeights = this._faceBarycentric(triangle, targetU, targetV);
+      const weightAt = (weights) => [weights.wb, weights.ws, weights.wd][exit.slot];
+      const startWeight = weightAt(startWeights);
+      const targetWeight = weightAt(targetWeights);
+      const t = startWeight / (startWeight - targetWeight);
+      const crossingU = u + du * t;
+      const crossingV = v + dv * t;
+      const remainingDu = du * (1 - t);
+      const remainingDv = dv * (1 - t);
+
+      const neighborTriangle = this._graph.triangles[neighborIndex];
+      const edgeAxis = sharedEdgeAxis(this._graph, faceIndex, neighborIndex);
+      const angle = dihedralRotationAngle(
+          triangle.normal, neighborTriangle.normal, edgeAxis);
+      const remaining3D = triangle.eX.clone().multiplyScalar(remainingDu)
+          .addScaledVector(triangle.eY, remainingDv);
+      const unfoldedRemaining3D = rotateAroundAxis(remaining3D, edgeAxis, angle);
+
+      // The crossing point itself lies exactly on the shared edge, so
+      // reprojecting *it* (unlike the overshoot) onto the neighbor's own
+      // plane is always exact, regardless of the fold.
+      const crossingPoint = facePoint(triangle, crossingU, crossingV);
+      const localCrossing = crossingPoint.clone().sub(neighborTriangle.origin);
+
+      faceIndex = neighborIndex;
+      u = localCrossing.dot(neighborTriangle.eX);
+      v = localCrossing.dot(neighborTriangle.eY);
+      du = unfoldedRemaining3D.dot(neighborTriangle.eX);
+      dv = unfoldedRemaining3D.dot(neighborTriangle.eY);
+    }
     const triangle = this._graph.triangles[faceIndex];
-    const barycentric = this._faceBarycentric(triangle, u, v);
-    const edgeSlot = this._exitedEdgeSlot(barycentric);
-    if (edgeSlot === null) {
-      this._state = { patch: 'face', faceIndex, u, v, h: this._state.h };
-      return;
-    }
-    const edge = computeEdgeGeometry(this._graph, faceIndex, edgeSlot);
-    if (edge === null) {
-      // Mesh boundary: clamp to the edge rather than falling off the mesh.
-      const clamped = this._clampToFace(triangle, u, v);
-      this._state = {
-        patch: 'face', faceIndex, u: clamped.u, v: clamped.v,
-        h: this._state.h,
-      };
-      return;
-    }
-    const surfacePoint = facePoint(triangle, u, v);
-    this._enterEdgeFromFace(faceIndex, edgeSlot, edge, surfacePoint);
+    const clamped = this._clampToFace(triangle, u + du, v + dv);
+    this._state = {
+      faceIndex, u: clamped.u, v: clamped.v, h: this._state.h,
+    };
   }
 
   /**
@@ -557,19 +837,114 @@ export class SurfaceCameraController {
     return { wb, ws, wd };
   }
 
-  /** Which of the 3 edges `(u, v)` has crossed, or `null` if still
-   * inside the triangle -- the edge opposite whichever barycentric
-   * weight went negative. */
-  _exitedEdgeSlot({ wb, ws, wd }) {
+  /**
+   * Which boundary of the triangle's own domain local `(u, v)` has
+   * crossed, given its barycentric weights -- `null` if still inside. A
+   * single negative weight is an ordinary edge crossing (the edge
+   * opposite that weight's own vertex). Two negative weights means a
+   * step cut across a corner without first grazing a single edge --
+   * exits through the vertex shared by both crossed edges (the slot
+   * whose own weight is *not* negative).
+   */
+  _exitedBoundary({ wb, ws, wd }) {
     const epsilon = -1e-9;
-    if (wb < epsilon) return 0;
-    if (ws < epsilon) return 1;
-    if (wd < epsilon) return 2;
-    return null;
+    const weights = [wb, ws, wd];
+    const negativeSlots = weights
+        .map((w, slot) => (w < epsilon ? slot : null))
+        .filter((slot) => slot !== null);
+    if (negativeSlots.length === 0) {
+      return null;
+    }
+    if (negativeSlots.length === 1) {
+      return { type: 'edge', slot: negativeSlots[0] };
+    }
+    const remainingSlot = [0, 1, 2].find((slot) => !negativeSlots.includes(slot));
+    return { type: 'vertex', slot: remainingSlot ?? negativeSlots[0] };
+  }
+
+  /**
+   * Resolves a corner-cut exit at `vertexIndex` by checking every face
+   * touching that vertex (`vertexFaces[vertexIndex]`, a small, bounded
+   * set) for whichever one actually contains the target point -- i.e.
+   * has a non-negative worst barycentric weight -- rather than guessing
+   * a single neighboring face and hoping repeated single-edge crossings
+   * eventually find it (an early version of this method did that; it
+   * can walk the *entire* fan without ever landing inside, since a
+   * single-edge guess can enter a neighbor whose own wedge doesn't
+   * contain the target either).
+   *
+   * Searches the fan in order of *hop distance* from `fromFaceIndex`
+   * (its immediate neighbors first, then their neighbors, and so on),
+   * not the fan's own raw storage order: a corner cut almost always
+   * lands in an immediately-adjacent face (`_applyLocalStep`'s own
+   * sub-stepping keeps individual steps small), so this finds the
+   * geometrically nearest valid match rather than whichever technically-
+   * valid but fan-distant one happens to appear earlier in the fan's own
+   * storage order.
+   *
+   * If *no* face's own wedge contains the target direction at all (a
+   * sharply convex vertex -- e.g. a spike tip -- where the surrounding
+   * faces' wedges don't cover the full range of directions, leaving a
+   * "missing" wedge past the tip that no face can represent), slides
+   * along whichever *edge* incident to the vertex comes closest (in true
+   * 3D distance) to the target, rather than collapsing all the way to
+   * the vertex itself -- collapsing to the vertex made it a
+   * self-reinforcing trap in an earlier version of this method, since a
+   * fixed screen-drag direction, re-expressed through whichever face
+   * happens to be current at the vertex, kept landing in *that* face's
+   * own missing wedge too.
+   */
+  _resolveVertexExit(vertexIndex, fromFaceIndex, u, v) {
+    const fromTriangle = this._graph.triangles[fromFaceIndex];
+    const surfacePoint = facePoint(fromTriangle, u, v);
+    const fan = this._graph.vertexFaces[vertexIndex];
+    const fromIndex = fan.indexOf(fromFaceIndex);
+
+    for (const faceIndex of vertexFanByHopDistance(fan, fromIndex)) {
+      const triangle = this._graph.triangles[faceIndex];
+      const local = surfacePoint.clone().sub(triangle.origin);
+      const candidateU = local.dot(triangle.eX);
+      const candidateV = local.dot(triangle.eY);
+      const bary = this._faceBarycentric(triangle, candidateU, candidateV);
+      if (Math.min(bary.wb, bary.ws, bary.wd) >= -1e-9) {
+        return { faceIndex, u: candidateU, v: candidateV };
+      }
+    }
+
+    const vertexSlot = fromTriangle.vertexIndices.indexOf(vertexIndex);
+    const vertexPosition = triangleVertexPosition(fromTriangle, vertexSlot);
+    const toSurfacePoint = surfacePoint.clone().sub(vertexPosition);
+
+    let bestFaceIndex = fromFaceIndex;
+    let bestU = 0;
+    let bestV = 0;
+    let bestDistSq = Infinity;
+    for (const faceIndex of fan) {
+      const triangle = this._graph.triangles[faceIndex];
+      const slot = triangle.vertexIndices.indexOf(vertexIndex);
+      for (const otherSlot of [(slot + 1) % 3, (slot + 2) % 3]) {
+        const otherPosition = triangleVertexPosition(triangle, otherSlot);
+        const edgeVector = otherPosition.clone().sub(vertexPosition);
+        const t = THREE.MathUtils.clamp(
+            toSurfacePoint.dot(edgeVector) / edgeVector.lengthSq(), 0, 1);
+        const candidatePoint = vertexPosition.clone()
+            .addScaledVector(edgeVector, t);
+        const distSq = candidatePoint.distanceToSquared(surfacePoint);
+        if (distSq < bestDistSq) {
+          const local = candidatePoint.clone().sub(triangle.origin);
+          bestDistSq = distSq;
+          bestFaceIndex = faceIndex;
+          bestU = local.dot(triangle.eX);
+          bestV = local.dot(triangle.eY);
+        }
+      }
+    }
+    return { faceIndex: bestFaceIndex, u: bestU, v: bestV };
   }
 
   /** Clamps `(u, v)` to lie within `triangle`'s own bounds -- used only
-   * at a mesh boundary, where there's no neighbor to hand off to. */
+   * at a mesh boundary, where there's no neighbor to hand off to, or if
+   * `_locateFace`'s own step cap is somehow exhausted. */
   _clampToFace(triangle, u, v) {
     const { wb, ws, wd } = this._faceBarycentric(triangle, u, v);
     const clampedWb = Math.max(0, wb);
@@ -582,69 +957,6 @@ export class SurfaceCameraController {
       u: normalizedWs * triangle.sideLength
           + (normalizedWd * triangle.sideLength) / 2,
       v: normalizedWd * triangle.altitude,
-    };
-  }
-
-  /** Transitions from a face patch onto the edge patch bordering it at
-   * `edgeSlot`, entering at `theta = 0` (still exactly at the face's own
-   * plane) for continuity. */
-  _enterEdgeFromFace(faceIndex, edgeSlot, edge, surfacePoint) {
-    const [posA, posB] = edge.vertexIndices.map(
-        (v) => this._graph.vertexPositions[v]);
-    const edgeVector = posB.clone().sub(posA);
-    const u = surfacePoint.clone().sub(posA).dot(edgeVector)
-        / edgeVector.lengthSq();
-    if (u <= 0 || u >= 1) {
-      this._enterVertexNear(edge.vertexIndices[u <= 0 ? 0 : 1]);
-      return;
-    }
-    this._state = {
-      patch: 'edge', triangleIndex: faceIndex, edgeSlot, u, t: 0,
-      h: this._state.h,
-    };
-  }
-
-  /** Moves along an edge patch to arc-length parameter `u`, transitioning
-   * to the far face (if `u` exceeds `[0, 1]`) or a vertex patch. */
-  _stepAlongEdge(state, u) {
-    if (u < 0 || u > 1) {
-      const edge = computeEdgeGeometry(
-          this._graph, state.triangleIndex, state.edgeSlot);
-      this._enterVertexNear(edge.vertexIndices[u < 0 ? 0 : 1]);
-      return;
-    }
-    // `t` (how far around the dihedral sweep) tracks `u` isn't directly
-    // meaningful here -- `t` is re-derived from the *actual* surface
-    // point in `_currentSurfacePoint`/`_currentNormal` via `state.t`,
-    // which this method leaves unchanged; only `u` (position along the
-    // edge) is a free pan parameter. The dihedral angle itself is fixed
-    // once entering the edge patch precisely on one face's own plane
-    // (`t = 0`) -- panning along an edge doesn't sweep the dihedral, only
-    // moving *across* it (handled in `_applyLocalStep`'s perpendicular
-    // branch) does.
-    this._state = { ...state, u };
-  }
-
-  /** Enters the face patch containing (or nearest to) `surfacePoint`,
-   * starting from `hintFaceIndex`'s own neighborhood -- used for edge/
-   * vertex-patch exits, where the destination face isn't already known
-   * precisely. */
-  _enterFaceAtPoint(hintFaceIndex, surfacePoint) {
-    const triangle = this._graph.triangles[hintFaceIndex];
-    const local = surfacePoint.clone().sub(triangle.origin);
-    const u = local.dot(triangle.eX);
-    const v = local.dot(triangle.eY);
-    this._stepWithinFace(hintFaceIndex, u, v);
-  }
-
-  /** Enters a vertex patch at `vertexIndex`, anchored at whichever
-   * adjacent face is first in its own cyclic fan (an arbitrary but
-   * stable starting point -- see the vertex-patch blend's own docstring
-   * for why exact positioning here isn't load-bearing). */
-  _enterVertexNear(vertexIndex) {
-    this._state = {
-      patch: 'vertex', vertexIndex, faceSlot: 0, blendT: 0,
-      h: this._state.h,
     };
   }
 }

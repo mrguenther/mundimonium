@@ -37,6 +37,11 @@ export class SceneManager {
     this.scene.add(object);
   }
 
+  /** @param {THREE.Object3D} object */
+  removeFromScene(object) {
+    this.scene.remove(object);
+  }
+
   /** Starts the render loop. */
   start() {
     this.renderer.setAnimationLoop(() => this._renderFrame());
