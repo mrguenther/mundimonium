@@ -45,6 +45,9 @@ def test_subclass_may_not_shadow_base_init_kwargs():
       def shortest_path(self, p1, p2):
         raise NotImplementedError()
 
+      def shortest_path_by_segment(self, p1, p2):
+        raise NotImplementedError()
+
       def geodesically_canonicalize_point(self, point):
         raise NotImplementedError()
 
@@ -111,6 +114,18 @@ def test_add_face_from_linear_distortion_factor():
   v3 = TessellationVertex([0, 1, 0])
   face = tess.add_face([v1, v2, v3], linear_distortion_factor=1.5)
   assert face.side_length == pytest.approx(3.0)
+
+
+def test_vertices_and_faces_are_read_only_views_over_the_private_lists(
+    icosahedron):
+  tess, _, _ = icosahedron
+  assert list(tess.vertices) == tess._vertices
+  assert list(tess.faces) == tess._faces
+  assert tess.vertices[0] is tess._vertices[0]
+  assert tess.num_vertices == len(tess._vertices)
+  assert tess.num_faces == len(tess._faces)
+  with pytest.raises(TypeError):
+    tess.vertices[0] = TessellationVertex([0, 0, 0])
 
 
 def test_registering_the_same_face_twice_is_a_noop(icosahedron):

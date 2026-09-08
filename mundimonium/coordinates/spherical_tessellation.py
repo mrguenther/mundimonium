@@ -386,6 +386,119 @@ class SphericalTessellation(Tessellation):
     return path_3d
 
   @override
+  def shortest_path_by_segment(
+      self,
+      p1: IsometricPoint,
+      p2: IsometricPoint,
+      max_steps: int = 500,
+  ) -> list[tuple[IsometricPoint, IsometricPoint]]:
+    """Traces the great-circle geodesic from p1 to p2, split into per-face
+    segments.
+
+    Exploits the sphere's exact embedding: each face's region of the sphere
+    (as partitioned by the O(1) `_locate_face_and_barycentric` lookup) is
+    bounded by great-circle arcs through the mesh's vertices, and the p1-p2
+    geodesic is itself a great-circle arc -- so the angle at which the path
+    leaves the current face is found by bisecting on face membership along
+    that arc, rather than a face-by-face walk or a closed-form great-circle
+    intersection.
+    """
+    if p1.grid is p2.grid:
+      return [(p1, p2)]
+
+    v1 = self._point_to_3d_unit(p1)
+    v2 = self._point_to_3d_unit(p2)
+    dot = float(np.clip(np.dot(v1, v2), -1.0, 1.0))
+    omega = math.acos(dot)
+    if omega < 1e-12:
+      return [(p1, p2)]
+    sin_omega = math.sin(omega)
+
+    if sin_omega < 1e-9:
+      # p1 and p2 are (numerically) exactly antipodal: every great circle
+      # through v1 also passes through its antipode -v1 = v2, so there are
+      # infinitely many equally-short paths and the usual SLERP formula is
+      # a 0/0 indeterminate form. Break the tie deterministically by picking
+      # an arbitrary (but fixed) reference direction perpendicular to v1.
+      reference = np.array([0.0, 0.0, 1.0])
+      if abs(np.dot(reference, v1)) > 0.9:
+        reference = np.array([1.0, 0.0, 0.0])
+      perp = reference - np.dot(reference, v1) * v1
+      perp = perp / np.linalg.norm(perp)
+
+      def direction_at(theta: float) -> np.ndarray:
+        return math.cos(theta) * v1 + math.sin(theta) * perp
+    else:
+      def direction_at(theta: float) -> np.ndarray:
+        return (
+            (math.sin(omega - theta) * v1 + math.sin(theta) * v2) / sin_omega
+        )
+
+    segments: list[tuple[IsometricPoint, IsometricPoint]] = []
+    theta = 0.0
+    curr_face = p1.grid
+    entry_point = p1
+
+    for _ in range(max_steps):
+      if curr_face is p2.grid:
+        segments.append((entry_point, p2))
+        break
+
+      # Bisect for the angle at which the path leaves `curr_face`.
+      lo, hi = theta, omega
+      for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        face_at_mid, _ = self._locate_face_and_barycentric(
+            self._radius * direction_at(mid))
+        if face_at_mid is curr_face:
+          lo = mid
+        else:
+          hi = mid
+      exit_theta = lo
+
+      exit_bary = self._barycentric_on_face(curr_face, direction_at(exit_theta))
+      exit_point = IsometricPoint.from_barycentric(curr_face, *exit_bary)
+      segments.append((entry_point, exit_point))
+
+      # Probe just past the crossing to find the next face. Boundary
+      # detection near an edge can be noisy at the scale of a single
+      # bisection step, so escalate the probe distance until it actually
+      # lands outside `curr_face` (or we've clearly run out of arc).
+      next_face = curr_face
+      probe_theta = exit_theta
+      for epsilon in (1e-9, 1e-7, 1e-5, 1e-3):
+        probe_theta = min(exit_theta + epsilon, omega)
+        next_face, next_bary = self._locate_face_and_barycentric(
+            self._radius * direction_at(probe_theta))
+        if next_face is not curr_face or probe_theta >= omega:
+          break
+
+      if next_face is curr_face:
+        # No further crossing anywhere in the remaining arc -- p2 must lie
+        # in curr_face. (If it doesn't, that's a genuine bug elsewhere,
+        # since the arc has nowhere left to go.)
+        assert curr_face is p2.grid, (
+            "shortest_path_by_segment: reached the end of the arc without "
+            "leaving the current face, but it isn't p2's face.")
+        segments.append((exit_point, p2))
+        break
+
+      entry_point = IsometricPoint.from_barycentric(next_face, *next_bary)
+      curr_face = next_face
+      theta = exit_theta
+    else:
+      raise RuntimeError(
+          f"shortest_path_by_segment exceeded {max_steps} steps; the path "
+          "may be crossing an unexpectedly large number of faces.")
+
+    # Drop precision-artifact segments -- e.g. an endpoint that started
+    # exactly on an edge/vertex and immediately left that grid.
+    return [
+        (a, b) for (a, b) in segments
+        if a.distance_from(b) > 1e-6 * a.grid.altitude
+    ]
+
+  @override
   def geodesically_canonicalize_point(
       self, point: IsometricPoint) -> IsometricPoint:
     """Moves `point` to a new grid if located outside its current grid's bounds.

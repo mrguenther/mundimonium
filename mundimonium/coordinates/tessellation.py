@@ -8,6 +8,7 @@ from mundimonium.coordinates.isometric import (
     IsometricDirection, IsometricGrid, IsometricPoint, IsometricVector,
     isometric_distance
 )
+from mundimonium.utils.sequence_view import SequenceView
 
 import abc
 import functools
@@ -90,6 +91,36 @@ class Tessellation(abc.ABC):
   def face_type(self) -> type[TessellationFace]:
     """The `TessellationFace` subclass used for this tessellation's faces."""
     return self._face_type
+
+  @property
+  def vertices(self) -> SequenceView[TessellationVertex]:
+    """A read-only view of every vertex registered so far.
+
+    Returns:
+      A view over the underlying vertex list -- indexable and iterable,
+      but neither a copy nor mutable.
+    """
+    return SequenceView(self._vertices)
+
+  @property
+  def faces(self) -> SequenceView[TessellationFace]:
+    """A read-only view of every face registered so far.
+
+    Returns:
+      A view over the underlying face list -- indexable and iterable, but
+      neither a copy nor mutable.
+    """
+    return SequenceView(self._faces)
+
+  @property
+  def num_vertices(self) -> int:
+    """The number of vertices registered so far."""
+    return len(self._vertices)
+
+  @property
+  def num_faces(self) -> int:
+    """The number of faces registered so far."""
+    return len(self._faces)
 
   @abc.abstractmethod
   def coords_at_point(self, point: IsometricPoint) -> tuple[Number, ...]:
@@ -271,6 +302,34 @@ class Tessellation(abc.ABC):
     """Moves `point` to a new grid if located outside its current grid's bounds.
 
     Mutates and returns `point`, not a copy.
+    """
+    raise NotImplementedError()
+
+  @abc.abstractmethod
+  def shortest_path_by_segment(
+      self,
+      p1: IsometricPoint,
+      p2: IsometricPoint,
+  ) -> list[tuple[IsometricPoint, IsometricPoint]]:
+    """Traces the geodesic path from p1 to p2, split into per-grid segments.
+
+    Each returned `(start, end)` tuple is a straight-line segment lying
+    entirely within one grid (`start.grid is end.grid`). If the whole path
+    lies within a single grid, the result is a single tuple.
+
+    Wherever the path crosses an edge or vertex shared by two grids, that
+    crossing is represented by the boundary point appearing twice -- once as
+    the endpoint of the segment on each side -- so that consecutive segments
+    "hand off" at (up to floating-point precision) the same physical
+    location, each expressed in its own grid's local coordinates:
+    ```
+    ..., (point_on_a, point_at_edge_on_a), (point_at_edge_on_b, point_on_b), ...
+    ```
+    Segments too short to be anything but a precision artifact (e.g. an
+    endpoint that starts exactly on an edge/vertex and immediately leaves
+    that grid) are omitted.
+
+    Subclasses should override this method with specific path tracers.
     """
     raise NotImplementedError()
 

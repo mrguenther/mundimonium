@@ -146,10 +146,14 @@ class IsometricGrid(abc.ABC, HashByIndex):
       return None
     b_component = p2.b - p1.b
     s_component = p2.s - p1.s
-    return isometric_distance(
-        b_component - 0.5 * s_component,
-        s_component - 0.5 * b_component,
-    )
+    # In Cartesian terms (b as the "up" axis, matching `isometric_to_
+    # cartesian`), a (delta_b, delta_s) displacement maps to Cartesian
+    # (delta_x, delta_y) = ((delta_d - delta_s)/sqrt(3), delta_b), with
+    # delta_d = -delta_b - delta_s (since b+s+d is constant). Expanding
+    # delta_x^2 + delta_y^2 in terms of delta_b and delta_s alone gives
+    # (4/3) * (delta_b^2 + delta_b*delta_s + delta_s^2), i.e. exactly
+    # (2/sqrt(3))^2 * isometric_distance(delta_b, -delta_s)^2.
+    return (2.0 / _SQRT_3) * isometric_distance(b_component, -s_component)
 
   @classmethod
   @abc.abstractmethod
@@ -702,8 +706,8 @@ class IsometricVector:
     related by a non-uniform linear transform, not a simple rescaling.)
     """
     if self._length_dirty:
-      self._cached_length = isometric_distance(
-          self.delta_b - 0.5 * self.delta_s, self.delta_s - 0.5 * self.delta_b)
+      self._cached_length = (
+          (2.0 / _SQRT_3) * isometric_distance(self.delta_b, -self.delta_s))
       self._length_dirty = False
     return self._cached_length
 
