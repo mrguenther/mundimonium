@@ -6,6 +6,7 @@ from mundimonium.coordinates.tessellation import (
     Tessellation, TessellationFace, TessellationVertex
 )
 
+from collections.abc import Sequence
 from numbers import Number
 from typing import override
 import cmath
@@ -689,9 +690,11 @@ class HyperbolicTessellation(Tessellation):
     line. *Relative to the current reference frame* -- `(0, 0)` is
     wherever `_reference_point` currently is, not the original seed.
   - Poincare disk `(x, y) = (X, Y) / (1 + T)`: not stored anywhere; a cheap
-    on-demand conversion (`to_poincare`, always seed-anchored), used
-    internally as scratch math during mesh growth and recentering, both of
-    which rely on conformal (angle-preserving) rotation about an arbitrary
+    on-demand conversion (`_poincare_of_vertex`, always seed-anchored,
+    with `relative_poincare`/`_relative_poincare_of_vertex` re-expressing
+    it relative to the current reference frame instead), used internally
+    as scratch math during mesh growth and recentering, both of which
+    rely on conformal (angle-preserving) rotation about an arbitrary
     point having a clean closed form there.
 
   Every face is a plain equilateral `TessellationFace` (uniform
@@ -776,19 +779,22 @@ class HyperbolicTessellation(Tessellation):
     """The current reference frame's anchor point (see `recenter`)."""
     return self._reference_point
 
-  @staticmethod
-  def to_poincare(vertex: TessellationVertex) -> tuple[float, float]:
-    """`vertex`'s Poincare-disk `(x, y)` position, derived on demand from
-    its stored (seed-anchored) Minkowski `projection_coordinates`.
+  @property
+  def stable_faces(self) -> frozenset[TessellationFace]:
+    """Every face in the current numerically-stable region (see
+    `_rebuild_stable_region`) -- within `max_stable_hops` combinatorial
+    hops of `reference_point`, and therefore both already built and safe
+    to run precision-sensitive Klein/Poincare math against."""
+    return frozenset(self._stable_faces)
 
-    Args:
-      vertex: The vertex to convert.
-
-    Returns:
-      The vertex's Poincare-disk `(x, y)` position.
-    """
-    z = _poincare_of_vertex(vertex)
-    return (z.real, z.imag)
+  @property
+  def stable_radius(self) -> float:
+    """The hyperbolic distance from `reference_point` to the farthest
+    face in `stable_faces` (see `_rebuild_stable_region`) -- a
+    conservative bound on how far a query can stray from `reference_point`
+    before it falls outside the numerically-stable region and triggers an
+    automatic recenter (see `_ensure_in_range`)."""
+    return self._stable_radius
 
   # ---------------------------------------------------------------------
   # Mesh construction / growth
@@ -1143,6 +1149,50 @@ class HyperbolicTessellation(Tessellation):
           visited.add(neighbor)
           queue.append((neighbor, hops + 1))
 
+  def faces_within_hops(
+      self, start_face: TessellationFace, max_hops: int,
+      max_faces: int | None = None,
+  ) -> list[TessellationFace]:
+    """Every face within `max_hops` combinatorial hops of `start_face`,
+    growing the mesh as needed to reach them.
+
+    The same breadth-first traversal `_rebuild_stable_region` uses for the
+    numerically-stable region (`_ensure_face_on_edge` per edge), but
+    returned directly rather than populating `_stable_faces`/
+    `_stable_radius`, and without moving the reference frame at all -- for
+    a caller that wants to render a wide area (e.g. a zoomed-out overview)
+    without treating any of it as newly "trusted" for precision-sensitive
+    queries like `flatten_region`/`geodesic_distance`.
+
+    Args:
+      start_face: The face to search outward from.
+      max_hops: How many face-to-face edge crossings to search out to.
+      max_faces: If given, stops the search early once this many faces
+        have been found -- a safety cap, since face count grows
+        exponentially with `max_hops` for a hyperbolic tiling.
+
+    Returns:
+      Every face found, including `start_face` itself.
+    """
+    faces = [start_face]
+    if max_faces is not None and len(faces) >= max_faces:
+      return faces
+    visited = {start_face}
+    frontier = [start_face]
+    for _ in range(max_hops):
+      next_frontier = []
+      for face in frontier:
+        for direction in IsometricDirection:
+          neighbor = self._ensure_face_on_edge(face, direction)
+          if neighbor not in visited:
+            visited.add(neighbor)
+            next_frontier.append(neighbor)
+            faces.append(neighbor)
+            if max_faces is not None and len(faces) >= max_faces:
+              return faces
+      frontier = next_frontier
+    return faces
+
   def _ensure_in_range(self, *points: IsometricPoint) -> None:
     """Recenters the reference frame as needed so that every one of
     `points` is within the current stable region (see
@@ -1212,15 +1262,29 @@ class HyperbolicTessellation(Tessellation):
   # Klein-coordinate geometry (barycentric conversion, face-walking)
   # ---------------------------------------------------------------------
 
+  def _relative_poincare_of_vertex(self, vertex: TessellationVertex) -> complex:
+    """`vertex`'s Poincare-disk position relative to the *current
+    reference frame*, as the Mobius-to-origin transform every precision-
+    critical computation in this class shares -- as opposed to
+    `_global_klein_of_vertex`'s fixed seed-anchored frame, used only for
+    coarse recentering decisions.
+
+    Args:
+      vertex: The vertex to convert.
+
+    Returns:
+      The vertex's reference-frame-relative Poincare-disk position.
+    """
+    return _to_origin_poincare(
+        _poincare_of_vertex(vertex), self._reference_poincare)
+
   def _relative_klein_of_vertex(
       self, vertex: TessellationVertex) -> tuple[float, float]:
     """`vertex`'s Klein-disk position relative to the *current reference
     frame*.
 
     This is the coordinate system every precision-critical geometry
-    computation in this class uses, as opposed to `_global_klein_of_vertex`
-    (the fixed seed-anchored frame, used only for coarse recentering
-    decisions).
+    computation in this class uses.
 
     Args:
       vertex: The vertex to convert.
@@ -1228,8 +1292,28 @@ class HyperbolicTessellation(Tessellation):
     Returns:
       The vertex's reference-frame-relative Klein-disk position.
     """
-    return _klein_of_poincare(
-        _to_origin_poincare(_poincare_of_vertex(vertex), self._reference_poincare))
+    return _klein_of_poincare(self._relative_poincare_of_vertex(vertex))
+
+  def relative_poincare(self, vertex: TessellationVertex) -> tuple[float, float]:
+    """`vertex`'s Poincare-disk `(x, y)` position relative to the
+    *current reference frame* -- bounded (radius < 1, since a Mobius disk
+    automorphism maps the unit disk to itself), unlike `flatten_region`'s
+    unbounded local log-map distances, and well-conditioned near the
+    current reference the way `flatten_region` itself is, unlike a fixed
+    seed-anchored projection (which would degrade in precision the
+    farther the reference frame has moved from the seed). Used for a wide
+    "overview" rendering that still needs to look like an actual bounded
+    disk (see `server.py`'s own `_handle_get_hyperbolic_overview_mesh`).
+
+    Args:
+      vertex: The vertex to convert.
+
+    Returns:
+      The vertex's reference-frame-relative Poincare-disk `(x, y)`
+      position.
+    """
+    z = self._relative_poincare_of_vertex(vertex)
+    return (z.real, z.imag)
 
   def _relative_klein_and_weight_of_vertex(
       self, vertex: TessellationVertex,
@@ -1625,6 +1709,178 @@ class HyperbolicTessellation(Tessellation):
     p2_minkowski = _minkowski_of_klein(
         *self._klein_of_barycentric(p2.grid, p2.barycentric))
     return _hyperbolic_distance(p1_minkowski, p2_minkowski)
+
+  @override
+  def flatten_region(
+      self, center: IsometricPoint, targets: Sequence[IsometricPoint],
+  ) -> list[tuple[float, float]]:
+    """Maps `targets` into a locally flat 2D coordinate system at `center`
+    -- the hyperbolic exponential map, in closed form.
+
+    Exact, unlike `geodesically_canonicalize_point`'s centroid-only
+    version of this same idea: that one needs `_compute_conformal_scale`'s
+    calibration because it starts from a *flat local frame* displacement,
+    only an approximation of a face's true hyperbolic shape. This method
+    starts and ends with exact Klein/Poincare coordinates on both `center`
+    and each target, so no such approximation -- or its calibration -- is
+    needed.
+
+    The Mobius transform sending `center` to the Poincare disk's origin
+    (`_to_origin_poincare`) is an isometry, so `target`'s position in that
+    recentered frame gives its exact hyperbolic distance and direction
+    from `center` directly: distance via the Poincare exponential map's
+    inverse (`2 * arctanh(radius)`), direction via its angle.
+
+    The *distance* half of that (`hypot(x, y)`) is exact and reference-
+    frame-independent, matching the base class's own contract. The
+    *angle* is not independently absolute, though: both `center` and each
+    `target` are read via `_klein_of_barycentric`'s reference-frame-
+    relative coordinates before the Mobius transform is applied, and
+    composing that transform with an unrelated prior reference-to-
+    reference hop is not a pure translation -- it carries a rotation too.
+    So the angle is only meaningful relative to whichever reference frame
+    is active *at the time of this call*; it will differ between two
+    calls with the same `center`/`target` if something recentered the
+    tessellation in between (see `unflatten_point`, which depends on this
+    directly).
+
+    Args:
+      center: The point the flattened region is centered on.
+      targets: The points to flatten, in any order, anywhere on the mesh.
+
+    Returns:
+      One `(x, y)` pair per point in `targets`, in the same order.
+    """
+    if not targets:
+      return []
+    self._ensure_in_range(center, *targets)
+
+    center_klein = self._klein_of_barycentric(
+        center.grid, center.barycentric)
+    center_poincare = _poincare_of_klein(*center_klein)
+
+    target_poincare = np.array(
+        [
+            _poincare_of_klein(*self._klein_of_barycentric(
+                target.grid, target.barycentric))
+            for target in targets
+        ],
+        dtype=np.complex128)
+
+    recentered = _to_origin_poincare(target_poincare, center_poincare)
+    radius = np.clip(np.abs(recentered), 0.0, 1.0 - 1e-12)
+    distance = 2.0 * np.arctanh(radius)
+    angle = np.angle(recentered)
+
+    x = distance * np.cos(angle)
+    y = distance * np.sin(angle)
+    return list(zip(x.tolist(), y.tolist()))
+
+  def unflatten_point(
+      self, center: IsometricPoint, x: Number, y: Number,
+  ) -> IsometricPoint:
+    """The mesh point `flatten_region(center, [that point])` would map to
+    `(x, y)` -- the exact inverse of `flatten_region`, for real-time
+    re-centering while panning a flat-mode view (see `server.py`'s own
+    `get_flat_mesh` handler).
+
+    Requires `center` to be the tessellation's *current* reference point
+    (see `recenter`) -- enforced here by recentering to it unconditionally
+    before doing anything else. This isn't just a precision nice-to-have:
+    `flatten_region`'s own `(x, y)` output is expressed relative to
+    whichever reference frame happens to be active *at the time of that
+    call* (its Mobius recentering is exact, but composing it with an
+    unrelated prior reference-to-reference hop is not a pure translation
+    -- it also carries a rotation, empirically confirmed by calling
+    `flatten_region` for the same `center`/target both with and without an
+    intervening `recenter` to an unrelated point and comparing the two
+    results: distances matched exactly, angles did not). So `(x, y)` is
+    only interpretable correctly by whichever call -- forward or backward
+    -- shares `flatten_region`'s notion of `center` being the reference at
+    the time.
+
+    No transported-orientation state needs to be carried forward across
+    calls the way `GenericTessellation.unflatten_point_and_transport_
+    orientation` does, though: as long as every caller recenters to its
+    own `center` immediately before flattening around it (which
+    `server.py`'s own request handling always does), each request
+    re-establishes the correct convention from scratch.
+
+    Args:
+      center: The point flat-mode panning was last centered on. Must
+        already be (or become, via the unconditional `recenter` below)
+        the tessellation's current reference point.
+      x: The panned-to view center's flattened x coordinate, relative to
+        `center`.
+      y: Same, for y.
+
+    Returns:
+      The mesh point at `(x, y)`.
+    """
+    self.recenter(center)
+    distance = math.hypot(x, y)
+    if distance < _BARYCENTRIC_EPSILON:
+      return center
+
+    angle = math.atan2(y, x)
+    poincare_radius = math.tanh(distance / 2.0)
+    recentered = cmath.rect(poincare_radius, angle)
+
+    center_klein = self._klein_of_barycentric(center.grid, center.barycentric)
+    center_poincare = _poincare_of_klein(*center_klein)
+    target_poincare = _from_origin_poincare(recentered, center_poincare)
+
+    u, v = _klein_of_poincare(target_poincare)
+    return self.new_point_at_coords(u, v)
+
+  def unflatten_relative_poincare(
+      self, center: IsometricPoint, x: float, y: float,
+  ) -> IsometricPoint:
+    """The mesh point at reference-relative Poincare-disk coordinates
+    `(x, y)` from `center` (see `relative_poincare`) -- its inverse, for
+    real-time re-centering while panning the "overview" mode.
+
+    Unconditionally recenters to `center` first, same discipline as
+    `unflatten_point` and for the same reason (so `center`'s own relative
+    position is definitionally `(0, 0)`, the convention `(x, y)` is
+    interpreted under). This is a real behavioral difference from
+    `relative_poincare`'s own former companion `point_at_poincare`
+    (removed): that method deliberately never recentered, since it
+    resolved an arbitrary *global* position that might be nowhere near
+    the current reference; here, `center` is always the last-resolved
+    reference and `(x, y)` is always a small, already-bounded offset from
+    it, so recentering is exactly the desired behavior, not something to
+    avoid.
+
+    Unlike `unflatten_point`, no `tanh(distance / 2)` conversion is
+    needed here -- `(x, y)` are already Poincare-radius-scaled (matching
+    `relative_poincare`'s own output), not true-hyperbolic-distance
+    log-map units.
+
+    Args:
+      center: The point the overview was last centered on. Must already
+        be (or become, via the unconditional `recenter` below) the
+        tessellation's current reference point.
+      x: The panned-to view center's reference-relative Poincare-disk x
+        coordinate.
+      y: Same, for y.
+
+    Returns:
+      The mesh point at `(x, y)`.
+    """
+    self.recenter(center)
+    u, v = _klein_of_poincare(complex(x, y))
+    return self.new_point_at_coords(u, v)
+
+  @override
+  def point_to_3d_position(self, point: IsometricPoint) -> np.ndarray:
+    """Not supported: `TessellationVertex.projection_coordinates` here are
+    Minkowski `(X, Y, Z)` coordinates, not a Euclidean 3D embedding (see
+    `mesh_export.tessellation_to_buffers`'s docstring for the same
+    caveat) -- this tessellation isn't wired into the rendering pipeline
+    at all yet.
+    """
+    raise NotImplementedError()
 
   @override
   def shortest_path_by_segment(

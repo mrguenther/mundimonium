@@ -3,8 +3,15 @@ import math
 import numpy as np
 import pytest
 
+from mundimonium.coordinates import generic_tessellation
+from mundimonium.coordinates.conftest import (
+    build_icosahedron, build_stellated_icosahedron,
+)
 from mundimonium.coordinates.exceptions import EndOfMeshSurfaceException
-from mundimonium.coordinates.generic_tessellation import GenericTessellation
+from mundimonium.coordinates.generic_tessellation import (
+    GenericTessellation, RelaxableFace, RelaxableVertex,
+    _canonical_local_frame, _recentered_local_frame,
+)
 from mundimonium.coordinates.isometric import IsometricDirection, IsometricPoint
 from mundimonium.coordinates.tessellation import TessellationVertex
 
@@ -33,6 +40,49 @@ def test_coords_related_methods_are_not_implemented(generic_mesh):
     tess.get_face_at_coords(0.0, 0.0)
   with pytest.raises(NotImplementedError):
     tess.coords_at_point(point)
+
+
+def test_flatten_region_requires_relaxable_face_type(generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  point = generic_mesh.any_face().centroid_local_coords
+  with pytest.raises(TypeError):
+    tess.flatten_region(point, [point])
+
+
+# ---------------------------------------------------------------------------
+# point_to_3d_position
+# ---------------------------------------------------------------------------
+
+def test_point_to_3d_position_matches_barycentric_blend(generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
+  alt = face.altitude
+  point = IsometricPoint(face, 0.3 * alt, 0.4 * alt)
+  wb, ws, wd = point.barycentric
+  expected = (
+      wb * np.array(face.vertex_b.projection_coordinates)
+      + ws * np.array(face.vertex_s.projection_coordinates)
+      + wd * np.array(face.vertex_d.projection_coordinates))
+  assert tuple(tess.point_to_3d_position(point)) == pytest.approx(
+      tuple(expected))
+
+
+def test_point_to_3d_position_at_a_vertex_is_that_vertex(generic_mesh):
+  tess, _, _ = generic_mesh.build()
+  face = generic_mesh.any_face()
+  point = IsometricPoint(face, face.altitude, 0.0)  # vertex_b
+  assert tuple(tess.point_to_3d_position(point)) == pytest.approx(
+      face.vertex_b.projection_coordinates)
+
+
+def test_point_to_3d_position_requires_euclidean_embedding():
+  tess = GenericTessellation(euclidean=False)
+  v1 = TessellationVertex([0.0, 0.0, 0.0])
+  v2 = TessellationVertex([1.0, 0.0, 0.0])
+  v3 = TessellationVertex([0.5, 1.0, 0.0])
+  face = tess.add_face([v1, v2, v3])
+  with pytest.raises(NotImplementedError):
+    tess.point_to_3d_position(face.centroid_local_coords)
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +127,7 @@ def test_local_2d_barycentric_round_trip(generic_mesh):
 
 def test_canonical_local_frame_round_trip_matches_face_geometry(generic_mesh):
   face = generic_mesh.any_face()
-  frame = GenericTessellation._canonical_local_frame(face)
+  frame = _canonical_local_frame(face)
   assert frame[1, 0] == pytest.approx(face.side_length)
   assert frame[2, 1] == pytest.approx(face.altitude)
 
@@ -412,3 +462,405 @@ def test_shortest_path_by_segment_handles_antipodal_centroids(icosahedron):
   assert segs[-1][1] is p2
   for a, b in segs:
     assert a.grid is b.grid
+
+
+def _relaxable_icosahedron():
+  return build_icosahedron(face_type=RelaxableFace, vertex_type=RelaxableVertex)
+
+
+def _relaxable_stellated_icosahedron():
+  return build_stellated_icosahedron(
+      face_type=RelaxableFace, vertex_type=RelaxableVertex)
+
+
+# ---------------------------------------------------------------------------
+# RelaxableFace / RelaxableVertex
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def relaxable_icosahedron():
+  return _relaxable_icosahedron()
+
+
+@pytest.fixture(scope="module")
+def relaxable_stellated_icosahedron():
+  return _relaxable_stellated_icosahedron()
+
+
+def test_discover_nearby_crosses_saddle_vertex():
+  # Two triangles sharing only one vertex -- a "saddle" configuration
+  # (`recalculate_adjacency_to` requires exactly 2 shared vertices for
+  # edge adjacency, so these two are never edge-adjacent). `_discover_
+  # nearby` must still cross it, since it reasons purely about vertex-
+  # to-vertex edges, never face-to-face adjacency.
+  tess = GenericTessellation(vertex_type=RelaxableVertex, face_type=RelaxableFace)
+  center = RelaxableVertex([0.0, 0.0, 0.0])
+  a = RelaxableVertex([1.0, 0.0, 0.0])
+  b = RelaxableVertex([0.5, 1.0, 0.0])
+  c = RelaxableVertex([-1.0, 0.0, 0.0])
+  d = RelaxableVertex([-0.5, -1.0, 0.0])
+  face_1 = tess.add_face([center, a, b])
+  face_2 = tess.add_face([center, c, d])
+  assert all(face_1.face_on_edge(d) is not face_2 for d in IsometricDirection)
+
+  _, nearby_faces, _ = generic_tessellation._discover_nearby([center], 10)
+  assert face_1 in nearby_faces
+  assert face_2 in nearby_faces
+
+
+def test_face_own_corners_are_pinned_at_canonical_positions(
+    relaxable_icosahedron):
+  _, _, faces = relaxable_icosahedron
+  face = faces[1]
+  positions = face.flattened_positions
+  expected = _recentered_local_frame(face)
+  assert positions[face.vertex_b] == pytest.approx(expected[0])
+  assert positions[face.vertex_s] == pytest.approx(expected[1])
+  assert positions[face.vertex_d] == pytest.approx(expected[2])
+
+
+def test_flattened_positions_is_cached(relaxable_icosahedron):
+  _, verts, faces = relaxable_icosahedron
+  face = faces[2]
+  assert face.flattened_positions is face.flattened_positions
+
+  vertex = verts[2]
+  assert vertex.flattened_positions is vertex.flattened_positions
+
+
+def test_flattened_positions_invalidated_after_new_face_added():
+  tess, _, faces = _relaxable_icosahedron()
+  face = faces[0]
+  cached = face.flattened_positions
+  assert face._flattened_positions is cached
+
+  v_new = RelaxableVertex([0.0, 0.0, 0.0])
+  tess.add_face([face.vertex_b, face.vertex_s, v_new])
+
+  assert face._flattened_positions is None
+  assert face.vertex_b._flattened_positions is None
+  assert face.vertex_s._flattened_positions is None
+
+
+def test_flattened_positions_invalidation_is_selective(monkeypatch):
+  # The default `RELAXATION_RADIUS` comfortably covers this entire
+  # 20-face icosahedron from any single face, so nothing would be "far"
+  # enough to survive invalidation at that radius -- shrink it first, on
+  # a fresh tessellation, so a face reached only via a second hop is
+  # genuinely out of range.
+  monkeypatch.setattr(generic_tessellation, "RELAXATION_RADIUS", 1)
+
+  tess, _, faces = _relaxable_icosahedron()
+  face = faces[0]
+
+  far_face = None
+  for candidate in faces:
+    if candidate is not face and candidate not in face.nearby_faces:
+      far_face = candidate
+      break
+  assert far_face is not None, "expected some face outside the shrunk radius"
+
+  far_face.flattened_positions  # force it to be cached
+  cached = far_face._flattened_positions
+
+  v_new = RelaxableVertex([0.0, 0.0, 0.0])
+  tess.add_face([face.vertex_b, face.vertex_s, v_new])
+
+  # `far_face` lies outside `RELAXATION_RADIUS` of the new face -- its
+  # cache should be untouched.
+  assert far_face._flattened_positions is cached
+
+
+def test_relaxable_vertex_blend_matches_manual_equal_weighted_average(
+    relaxable_icosahedron):
+  # Every face here has the same (default) side length, so `RelaxableVertex`'s
+  # circumradius-based weighting should reduce to a plain equal-weighted
+  # average -- of each adjacent face's own contribution rotation-aligned
+  # onto the first adjacent face's own frame (see `_align_rotation`), not
+  # of the raw contributions directly.
+  _, verts, faces = relaxable_icosahedron
+  vertex = verts[0]
+  target_vertex = verts[1]  # present in every adjacent face's own dict,
+                             # since the default radius covers this whole mesh
+  adjacent = vertex.adjacent_faces()
+  reference_positions = adjacent[0].flattened_positions
+  reference_origin = reference_positions[vertex]
+
+  blended = vertex.flattened_positions[target_vertex]
+  manual = generic_tessellation._blend_positions([
+      (1.0, (np.eye(2) if face is adjacent[0] else
+             generic_tessellation._align_rotation(
+                 reference_positions, reference_origin,
+                 face.flattened_positions, face.flattened_positions[vertex]))
+            @ (face.flattened_positions[target_vertex]
+               - face.flattened_positions[vertex]))
+      for face in adjacent
+  ])
+  assert blended == pytest.approx(manual)
+
+
+def test_relaxable_vertex_own_position_is_exactly_the_origin(
+    relaxable_icosahedron):
+  # Unlike an earlier, transform-blending design (which only landed
+  # *close to* the origin here), blending raw positions recenters every
+  # contribution exactly, so the blend is exactly `(0, 0)` too.
+  _, verts, _faces = relaxable_icosahedron
+  vertex = verts[0]
+  assert vertex.flattened_positions[vertex] == pytest.approx(
+      np.zeros(2), abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# flatten_region
+# ---------------------------------------------------------------------------
+
+def test_flatten_region_requires_relaxable_vertex_type():
+  # `face_type=RelaxableFace` alone isn't enough -- a plain
+  # `TessellationVertex` has no `flattened_positions`.
+  tess, _, faces = build_icosahedron(face_type=RelaxableFace)
+  center = faces[0].centroid_local_coords
+  with pytest.raises(AttributeError):
+    tess.flatten_region(center, [center])
+
+
+def test_flatten_region_centroid_lands_exactly_at_origin(relaxable_icosahedron):
+  tess, _, faces = relaxable_icosahedron
+  center = faces[0].centroid_local_coords
+  (x, y), = tess.flatten_region(center, [center])
+  assert (x, y) == pytest.approx((0.0, 0.0), abs=1e-9)
+
+
+def test_flatten_region_vertex_lands_exactly_at_origin(relaxable_icosahedron):
+  # Unlike an earlier, transform-blending design (which only landed
+  # *close to* the origin here), blending raw positions makes this exact
+  # -- see `RelaxableVertex`'s own docstring.
+  tess, _, faces = relaxable_icosahedron
+  face = faces[0]
+  vertex_point = IsometricPoint(face, face.altitude, 0.0)  # vertex_b
+  (x, y), = tess.flatten_region(vertex_point, [vertex_point])
+  assert (x, y) == pytest.approx((0.0, 0.0), abs=1e-9)
+
+
+def test_flatten_region_immediate_neighbors_land_near_their_true_distance(
+    relaxable_icosahedron):
+  tess, _, faces = relaxable_icosahedron
+  face = faces[0]
+  center = face.centroid_local_coords
+  neighbors = [
+      IsometricPoint(face, face.altitude, 0.0),
+      IsometricPoint(face, 0.0, face.altitude),
+      IsometricPoint(face, 0.0, 0.0),
+  ]
+
+  results = tess.flatten_region(center, neighbors)
+
+  for neighbor, (x, y) in zip(neighbors, results):
+    true_distance = tess.geodesic_distance(center, neighbor)
+    flat_distance = math.hypot(x, y)
+    assert flat_distance == pytest.approx(true_distance, rel=0.05)
+
+
+def test_flatten_region_different_directions_get_different_angles(
+    relaxable_icosahedron):
+  tess, _, faces = relaxable_icosahedron
+  face = faces[0]
+  center = face.centroid_local_coords
+  targets = [
+      IsometricPoint(face, face.altitude, 0.0),
+      IsometricPoint(face, 0.0, face.altitude),
+      IsometricPoint(face, 0.0, 0.0),
+  ]
+
+  results = tess.flatten_region(center, targets)
+  angles = [math.atan2(y, x) for x, y in results]
+
+  for i in range(len(angles)):
+    for j in range(i + 1, len(angles)):
+      gap = abs(angles[i] - angles[j])
+      gap = min(gap, 2 * math.pi - gap)
+      assert gap > 0.5
+
+
+def test_flatten_region_same_center_is_stable(relaxable_icosahedron):
+  tess, _, faces = relaxable_icosahedron
+  face = faces[0]
+  center = face.centroid_local_coords
+  targets = [
+      IsometricPoint(face, face.altitude, 0.0),
+      IsometricPoint(face, 0.0, face.altitude),
+      IsometricPoint(face, 0.0, 0.0),
+  ]
+
+  first = tess.flatten_region(center, targets)
+  second = tess.flatten_region(center, targets)
+
+  # Bit-for-bit identical, unlike the earlier live-relaxation design:
+  # everything involved is precomputed and cached, so repeating the same
+  # call re-reads exactly the same cached positions every time.
+  assert first == second
+
+
+def test_flatten_region_degenerate_positions_match_direct_lookup(
+    relaxable_icosahedron):
+  # The plan's listed special cases (exactly at the centroid, at a
+  # vertex, on a dividing edge) should all fall out of the same general
+  # interpolation as a 1- or 2-anchor blend, with no separate code path.
+  _, _, faces = relaxable_icosahedron
+  face = faces[0]
+
+  # Exactly at the centroid: only the face's own anchor should
+  # contribute.
+  centroid_blend = GenericTessellation._blended_positions_at(
+      face, face.centroid_local_coords)
+  for key, position in face.flattened_positions.items():
+    assert centroid_blend[key] == pytest.approx(position)
+
+  # Exactly at vertex_b: only vertex_b's own anchor should contribute --
+  # rotation-aligned onto `face`'s own frame (see `_align_rotation`), not
+  # vertex_b's raw own positions directly.
+  vertex_point = IsometricPoint(face, face.altitude, 0.0)
+  vertex_blend = GenericTessellation._blended_positions_at(face, vertex_point)
+  for key, position in face.aligned_corner_positions[face.vertex_b].items():
+    if key not in face.flattened_positions:
+      continue
+    assert vertex_blend[key] == pytest.approx(position)
+
+  # On the b-s edge (the d-weight is exactly 0): only vertex_b and
+  # vertex_s should contribute, not the centroid.
+  edge_point = IsometricPoint(face, 0.5 * face.altitude, 0.5 * face.altitude)
+  edge_blend = GenericTessellation._blended_positions_at(face, edge_point)
+  manual = {}
+  for key in face.flattened_positions:
+    weighted = [
+        (1.0, positions[key])
+        for positions in (
+            face.aligned_corner_positions[face.vertex_b],
+            face.aligned_corner_positions[face.vertex_s])
+        if key in positions
+    ]
+    if weighted:
+      manual[key] = generic_tessellation._blend_positions(weighted)
+  for key, position in manual.items():
+    assert edge_blend[key] == pytest.approx(position)
+
+
+def test_flatten_region_stellated_icosahedron_has_no_nan_across_valences(
+    relaxable_stellated_icosahedron):
+  # The motivating stress case for this whole phase: a neighborhood
+  # spanning both a valence-5-to-10 original vertex and a valence-3 apex
+  # vertex should relax to a finite, self-consistent layout.
+  tess, _, faces = relaxable_stellated_icosahedron
+  # `faces[0]` is `(apex, va, vb)` (see `build_stellated_icosahedron`'s
+  # docstring): its own 3 corners already mix a valence-3 apex vertex
+  # with two valence-10 original-icosahedron vertices.
+  face = faces[0]
+  center = face.centroid_local_coords
+  targets = [
+      IsometricPoint(face, face.altitude, 0.0),
+      IsometricPoint(face, 0.0, face.altitude),
+      IsometricPoint(face, 0.0, 0.0),
+      center,
+  ]
+
+  results = tess.flatten_region(center, targets)
+
+  for x, y in results:
+    assert math.isfinite(x) and math.isfinite(y)
+
+
+def test_flatten_region_raises_for_target_outside_every_anchors_range(
+    monkeypatch):
+  # The default `RELAXATION_RADIUS` turns out to comfortably cover an
+  # entire 20-face icosahedron from any single anchor, so there's no
+  # naturally-far-enough point to reach for on that fixture -- shrink the
+  # radius instead, on a fresh tessellation, so a face reached only via a
+  # second hop already falls outside it.
+  monkeypatch.setattr(generic_tessellation, "RELAXATION_RADIUS", 1)
+
+  tess, _, faces = _relaxable_icosahedron()
+  face = faces[0]
+  center = face.centroid_local_coords
+
+  far_face = None
+  for candidate in faces:
+    if candidate is not face and candidate not in face.nearby_faces:
+      far_face = candidate
+      break
+  assert far_face is not None, "expected some face outside the shrunk radius"
+  far_target = far_face.centroid_local_coords
+
+  with pytest.raises(ValueError):
+    tess.flatten_region(center, [far_target])
+
+
+def test_flatten_region_orientation_rotates_output(relaxable_icosahedron):
+  tess, _, faces = relaxable_icosahedron
+  face = faces[0]
+  center = face.centroid_local_coords
+  targets = [
+      IsometricPoint(face, face.altitude, 0.0),
+      IsometricPoint(face, 0.0, face.altitude),
+  ]
+  identity_results = tess.flatten_region(center, targets)
+
+  angle = math.pi / 3
+  rotation = np.array([
+      [math.cos(angle), -math.sin(angle)],
+      [math.sin(angle), math.cos(angle)],
+  ])
+  rotated_results = tess.flatten_region(center, targets, rotation)
+
+  for (x, y), (rotated_x, rotated_y) in zip(identity_results, rotated_results):
+    expected = rotation @ np.array([x, y])
+    assert (rotated_x, rotated_y) == pytest.approx(tuple(expected))
+
+
+# ---------------------------------------------------------------------------
+# unflatten_point / unflatten_point_and_transport_orientation
+# ---------------------------------------------------------------------------
+
+def test_unflatten_point_round_trips_flatten_region(
+    relaxable_stellated_icosahedron):
+  # Uses the stellated (60-face) fixture rather than the plain
+  # icosahedron: the latter's `RELAXATION_RADIUS` happens to comfortably
+  # cover its entire 20-face mesh (see `test_flatten_region_raises_for_
+  # target_outside_every_anchors_range`'s own comment), so unfolding it
+  # flat from a single anchor is a full closed-surface unwrap that can
+  # genuinely, harmlessly self-overlap far from center -- an unrelated,
+  # pre-existing edge case of that specific small fixture, not something
+  # this test is trying to exercise.
+  tess, _, faces = relaxable_stellated_icosahedron
+  face = faces[0]
+  center = face.centroid_local_coords
+  target = face.face_on_edge(IsometricDirection.S).centroid_local_coords
+
+  (x, y), = tess.flatten_region(center, [target])
+  resolved = tess.unflatten_point(center, x, y)
+
+  assert resolved.grid is target.grid
+  assert resolved.b == pytest.approx(target.b, abs=1e-6)
+  assert resolved.s == pytest.approx(target.s, abs=1e-6)
+
+
+def test_unflatten_point_and_transport_orientation_avoids_spurious_rotation(
+    relaxable_stellated_icosahedron):
+  # This is the regression case for the "panning to a new face snaps the
+  # view to that face's own canonical orientation" bug: recentering on a
+  # neighboring face and then, using the *transported* orientation,
+  # looking back at the original center should land close to the exact
+  # reverse of the original pan -- not rotated by whatever the two
+  # faces' independent canonical frames happen to disagree by.
+  tess, _, faces = relaxable_stellated_icosahedron
+  face = faces[0]
+  neighbor = face.face_on_edge(IsometricDirection.B)
+  old_center = face.centroid_local_coords
+  target = neighbor.centroid_local_coords
+
+  (x, y), = tess.flatten_region(old_center, [target])
+  new_center, new_orientation = tess.unflatten_point_and_transport_orientation(
+      old_center, x, y, orientation=None)
+  assert new_center.grid is neighbor
+
+  (back_x, back_y), = tess.flatten_region(
+      new_center, [old_center], new_orientation)
+  assert (back_x, back_y) == pytest.approx((-x, -y), rel=0.2, abs=1e-6)

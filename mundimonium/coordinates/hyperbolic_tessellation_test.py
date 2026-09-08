@@ -232,6 +232,124 @@ def test_geodesic_distance_matches_sum_of_segment_hyperbolic_lengths(tess):
 
 
 # ---------------------------------------------------------------------------
+# flatten_region
+# ---------------------------------------------------------------------------
+
+def test_flatten_region_preserves_distance_to_center(tess):
+  rng = random.Random(6)
+  center = _random_point(_random_stable_face(tess, rng), rng)
+  targets = [
+      _random_point(_random_stable_face(tess, rng), rng) for _ in range(5)]
+  positions = tess.flatten_region(center, targets)
+  for target, (x, y) in zip(targets, positions):
+    expected = tess.geodesic_distance(center, target)
+    assert math.hypot(x, y) == pytest.approx(expected, rel=1e-6)
+
+
+def test_flatten_region_of_center_itself_is_the_origin(tess):
+  center = tess.faces[0].centroid_local_coords
+  [(x, y)] = tess.flatten_region(center, [center])
+  assert (x, y) == pytest.approx((0.0, 0.0), abs=1e-9)
+
+
+def test_flatten_region_different_vertices_of_a_face_get_different_angles(tess):
+  face = tess.faces[0]
+  center = face.centroid_local_coords
+  vertex_b_point = IsometricPoint(face, face.altitude, 0.0)
+  vertex_s_point = IsometricPoint(face, 0.0, face.altitude)
+  (xb, yb), (xs, ys) = tess.flatten_region(
+      center, [vertex_b_point, vertex_s_point])
+  assert math.atan2(yb, xb) != pytest.approx(math.atan2(ys, xs), abs=1e-3)
+
+
+def test_flatten_region_of_no_targets_returns_an_empty_list(tess):
+  center = tess.faces[0].centroid_local_coords
+  assert tess.flatten_region(center, []) == []
+
+
+def test_point_to_3d_position_is_not_supported(tess):
+  # `projection_coordinates` here are Minkowski, not Euclidean 3D -- see
+  # `mesh_export.tessellation_to_buffers`'s docstring for why this
+  # tessellation isn't wired into the rendering pipeline.
+  center = tess.faces[0].centroid_local_coords
+  with pytest.raises(NotImplementedError):
+    tess.point_to_3d_position(center)
+
+
+# ---------------------------------------------------------------------------
+# unflatten_point
+#
+# These use their own fresh tessellation rather than the shared `tess`
+# fixture, since they exercise `recenter` directly -- reusing the shared,
+# module-scoped fixture would leak reference-frame state into later tests.
+# ---------------------------------------------------------------------------
+
+def test_unflatten_point_round_trips_flatten_region():
+  tess = HyperbolicTessellation()
+  rng = random.Random(11)
+  for _ in range(20):
+    center = _random_point(_random_stable_face(tess, rng), rng)
+    tess.recenter(center)
+    target = _random_point(_random_stable_face(tess, rng), rng)
+    (x, y), = tess.flatten_region(center, [target])
+    recovered = tess.unflatten_point(center, x, y)
+    assert tess.geodesic_distance(target, recovered) == pytest.approx(
+        0.0, abs=1e-6)
+
+
+def test_unflatten_point_of_zero_offset_returns_center_unchanged():
+  tess = HyperbolicTessellation()
+  rng = random.Random(3)
+  center = _random_point(_random_stable_face(tess, rng), rng)
+  result = tess.unflatten_point(center, 0.0, 0.0)
+  assert result.grid is center.grid
+  assert result.b == pytest.approx(center.b)
+  assert result.s == pytest.approx(center.s)
+
+
+def test_unflatten_point_preserves_distance_from_center():
+  tess = HyperbolicTessellation()
+  rng = random.Random(4)
+  center = _random_point(_random_stable_face(tess, rng), rng)
+  tess.recenter(center)
+  for _ in range(10):
+    x, y = rng.uniform(-0.5, 0.5), rng.uniform(-0.5, 0.5)
+    new_point = tess.unflatten_point(center, x, y)
+    assert tess.geodesic_distance(center, new_point) == pytest.approx(
+        math.hypot(x, y), rel=1e-5)
+
+
+def test_unflatten_point_composes_correctly_across_consecutive_pans():
+  # The exact scenario `server.py`'s own request handling relies on:
+  # recenter to the newly-resolved center before resolving the next pan,
+  # every time (see `_resolve_hyperbolic_flat_center`).
+  tess = HyperbolicTessellation()
+  rng = random.Random(5)
+  center = _random_point(_random_stable_face(tess, rng), rng)
+  tess.recenter(center)
+  for _ in range(15):
+    dx, dy = rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3)
+    new_center = tess.unflatten_point(center, dx, dy)
+    assert tess.geodesic_distance(center, new_center) == pytest.approx(
+        math.hypot(dx, dy), rel=1e-5)
+    tess.recenter(new_center)
+    center = new_center
+
+
+def test_stable_faces_and_stable_radius_reflect_recenter():
+  tess = HyperbolicTessellation(order=7, rings=1, max_stable_hops=2)
+  original_faces = tess.stable_faces
+  original_radius = tess.stable_radius
+  assert tess.reference_point.grid in original_faces
+  assert original_radius > 0.0
+
+  far_point = tess.new_point_at_coords(0.9, 0.0)
+  tess.recenter(far_point)
+  assert tess.stable_faces != original_faces
+  assert far_point.grid in tess.stable_faces
+
+
+# ---------------------------------------------------------------------------
 # geodesically_canonicalize_point
 # ---------------------------------------------------------------------------
 
@@ -519,3 +637,129 @@ def test_deep_panning_survives_far_past_the_original_construction_wall():
   distance_from_seed = _hyperbolic_distance(
       seed_minkowski, tess._reference_global_minkowski)
   assert distance_from_seed > 5.0
+
+
+# ---------------------------------------------------------------------------
+# faces_within_hops / relative_poincare / unflatten_relative_poincare
+#
+# Overview-mode support (Phase 12): a second, bounded Poincare-disk
+# projection for zoomed-out rendering. Unlike close-up's `flatten_region`/
+# `unflatten_point`, `faces_within_hops` deliberately never touches the
+# reference frame or its stable-region gate at all; `relative_poincare`/
+# `unflatten_relative_poincare` are reference-relative (like every other
+# precision-critical computation in this class), just expressed in
+# Poincare-disk-radius units rather than Klein or log-map units.
+# ---------------------------------------------------------------------------
+
+def test_faces_within_hops_matches_a_hand_verifiable_hop_count():
+  tess = HyperbolicTessellation()
+  start = tess.reference_point.grid
+  # Every face is a triangle (vertex_b/s/d), so 1 hop reaches exactly the
+  # start face plus its 3 edge-neighbors -- true regardless of `order`
+  # (the *vertex* valence), which only affects how many faces meet at a
+  # shared vertex, not how many edges bound a single face.
+  faces = tess.faces_within_hops(start, 1)
+  assert len(faces) == 1 + 3
+  assert start in faces
+
+
+def test_faces_within_hops_does_not_touch_reference_frame_or_stable_region():
+  tess = HyperbolicTessellation(order=7, rings=1, max_stable_hops=2)
+  start = tess.reference_point.grid
+  original_reference = tess.reference_point
+  original_stable_faces = tess.stable_faces
+  original_stable_radius = tess.stable_radius
+
+  tess.faces_within_hops(start, 6)
+
+  assert tess.reference_point is original_reference
+  assert tess.stable_faces == original_stable_faces
+  assert tess.stable_radius == original_stable_radius
+
+
+def test_faces_within_hops_respects_max_faces():
+  tess = HyperbolicTessellation()
+  start = tess.reference_point.grid
+  faces = tess.faces_within_hops(start, 20, max_faces=50)
+  assert len(faces) <= 50
+
+
+def test_relative_poincare_round_trips_via_unflatten_relative_poincare():
+  tess = HyperbolicTessellation()
+  face = tess.reference_point.grid
+  # `IsometricPoint(face, face.altitude, 0.0)` is exactly `face.vertex_b`,
+  # by `IsometricPoint.barycentric`'s own `(b / altitude, s / altitude,
+  # d / altitude)` convention -- lets the round trip be checked via
+  # `geodesic_distance` rather than comparing grid faces/vertices
+  # directly, since the walk may legitimately reach the same point via a
+  # different (but coincident) face than the one `relative_poincare` read
+  # from.
+  vertex_point = IsometricPoint(face, face.altitude, 0.0)
+  x, y = tess.relative_poincare(face.vertex_b)
+  recovered = tess.unflatten_relative_poincare(tess.reference_point, x, y)
+  assert tess.geodesic_distance(vertex_point, recovered) == pytest.approx(
+      0.0, abs=1e-6)
+
+
+def test_unflatten_relative_poincare_of_zero_offset_returns_center_unchanged():
+  tess = HyperbolicTessellation()
+  rng = random.Random(6)
+  center = _random_point(_random_stable_face(tess, rng), rng)
+  result = tess.unflatten_relative_poincare(center, 0.0, 0.0)
+  assert tess.geodesic_distance(center, result) == pytest.approx(
+      0.0, abs=1e-6)
+
+
+def test_unflatten_relative_poincare_recenters_to_center():
+  # A deliberate behavioral difference from the `point_at_poincare` this
+  # method replaces (which never recentered, since it resolved an
+  # arbitrary *global* position that might be nowhere near the current
+  # reference): `unflatten_relative_poincare` is always called with
+  # `center` = the last-resolved reference and a small bounded offset, so
+  # recentering to `center` is exactly the desired behavior here.
+  tess = HyperbolicTessellation()
+  rng = random.Random(7)
+  center = _random_point(_random_stable_face(tess, rng), rng)
+  assert tess.reference_point.grid is not center.grid
+  tess.unflatten_relative_poincare(center, 0.1, -0.05)
+  assert tess.reference_point.grid is center.grid
+
+
+def test_relative_poincare_positions_are_within_the_unit_disk():
+  tess = HyperbolicTessellation()
+  start = tess.reference_point.grid
+  for face in tess.faces_within_hops(start, 10, max_faces=1000):
+    for vertex in (face.vertex_b, face.vertex_s, face.vertex_d):
+      x, y = tess.relative_poincare(vertex)
+      assert math.hypot(x, y) < 1.0
+
+
+def test_relative_poincare_stays_finite_and_bounded_after_deep_panning():
+  # `relative_poincare` is trusted noticeably farther from the reference
+  # (`_HYPERBOLIC_OVERVIEW_HOPS`, 10 in `server.py`) than any existing
+  # precision-critical path exercises the same Mobius-to-origin transform
+  # (`max_stable_hops`, default 3) -- confirm it holds up even once the
+  # reference has been panned far past the original construction wall,
+  # mirroring `test_deep_panning_survives_far_past_the_original_
+  # construction_wall`'s own setup.
+  tess = HyperbolicTessellation(order=7, rings=1, max_stable_hops=3)
+  for _ in range(40):
+    p = tess.new_point_at_coords(0.3, 0.0)
+    tess.recenter(p)
+
+  start = tess.reference_point.grid
+  faces = tess.faces_within_hops(start, 10, max_faces=1000)
+  seen_positions = set()
+  for face in faces:
+    for vertex in (face.vertex_b, face.vertex_s, face.vertex_d):
+      x, y = tess.relative_poincare(vertex)
+      assert math.isfinite(x) and math.isfinite(y)
+      assert math.hypot(x, y) < 1.0
+      seen_positions.add((round(x, 9), round(y, 9)))
+  # Every vertex should still land at its own distinct position -- no
+  # precision collapse merging distinct vertices onto the same point.
+  vertex_count = len({
+      vertex for face in faces
+      for vertex in (face.vertex_b, face.vertex_s, face.vertex_d)
+  })
+  assert len(seen_positions) == vertex_count

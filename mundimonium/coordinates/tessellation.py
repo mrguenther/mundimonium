@@ -10,6 +10,8 @@ from mundimonium.coordinates.isometric import (
 )
 from mundimonium.utils.sequence_view import SequenceView
 
+from collections.abc import Sequence
+
 import abc
 import functools
 import itertools
@@ -122,6 +124,20 @@ class Tessellation(abc.ABC):
     """The number of faces registered so far."""
     return len(self._faces)
 
+  def index_of_face(self, face: TessellationFace) -> int:
+    """`face`'s index into `self.faces`.
+
+    An O(1) lookup via the same map `register_face` already maintains
+    internally, unlike `self.faces.index(face)`'s O(n) linear scan.
+
+    Args:
+      face: The face to look up. Must already be registered.
+
+    Returns:
+      `face`'s index.
+    """
+    return self._face_index_map[face]
+
   @abc.abstractmethod
   def coords_at_point(self, point: IsometricPoint) -> tuple[Number, ...]:
     """
@@ -153,6 +169,51 @@ class Tessellation(abc.ABC):
 
     The coordinate system used by `coords` (including the number of coordinates
     in the tuple) is implementation-defined.
+    """
+    raise NotImplementedError()
+
+  @abc.abstractmethod
+  def flatten_region(
+      self, center: IsometricPoint, targets: Sequence[IsometricPoint],
+  ) -> list[tuple[Number, Number]]:
+    """Maps `targets` into a locally flat 2D coordinate system at `center`.
+
+    This is the Riemannian log map at `center`: each returned `(x, y)`
+    satisfies `hypot(x, y) == self.geodesic_distance(center, target)`
+    exactly, with the angle encoding `target`'s direction from `center`.
+    Output is in this tessellation's own true geodesic-distance units.
+    (Deliberately compared to `geodesic_distance`, not `distance` --
+    `distance` takes a faster, approximate flat-local-frame shortcut for
+    points on the same or adjacent grid, which this doesn't match exactly.)
+
+    Subclasses that don't support this should raise `NotImplementedError`.
+
+    Args:
+      center: The point the flattened region is centered on.
+      targets: The points to flatten, in any order, anywhere on the mesh.
+
+    Returns:
+      One `(x, y)` pair per point in `targets`, in the same order.
+    """
+    raise NotImplementedError()
+
+  @abc.abstractmethod
+  def point_to_3d_position(self, point: IsometricPoint) -> np.ndarray:
+    """Returns the 3D world-space position of `point`.
+
+    Requires `TessellationVertex.projection_coordinates` to already be an
+    accurate Euclidean embedding (see `mesh_export.tessellation_to_
+    buffers`'s own docstring for the same caveat) -- not true for every
+    subclass (e.g. `HyperbolicTessellation`'s `projection_coordinates`
+    are Minkowski, not Euclidean 3D).
+
+    Subclasses that don't support this should raise `NotImplementedError`.
+
+    Args:
+      point: A point on this tessellation's mesh.
+
+    Returns:
+      A `(x, y, z)` position.
     """
     raise NotImplementedError()
 

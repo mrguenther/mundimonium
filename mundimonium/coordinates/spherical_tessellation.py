@@ -5,9 +5,28 @@ from mundimonium.coordinates.tessellation import (
 )
 from mundimonium.coordinates.isometric import IsometricPoint
 
+from collections.abc import Sequence
 from typing import Self, override
 import math
 import numpy as np
+
+# The fixed reference frame `_tangent_basis` rotates to build a tangent
+# basis at an arbitrary direction -- see that method's docstring for why
+# the north pole specifically (rather than, say, an equatorial point)
+# isn't itself meaningful; only the resulting singularity at its
+# antipode is.
+_REFERENCE_POLE = np.array([0.0, 0.0, 1.0])
+_REFERENCE_E_X = np.array([1.0, 0.0, 0.0])
+_REFERENCE_E_Y = np.array([0.0, 1.0, 0.0])
+
+
+def _orthonormalize_against(
+    vector: np.ndarray, unit_reference: np.ndarray) -> np.ndarray:
+  """Removes `vector`'s component along `unit_reference` (a unit vector)
+  and renormalizes -- a Gram-Schmidt correction step, not a projection
+  onto a plane containing the origin in any other sense."""
+  projected = vector - np.dot(vector, unit_reference) * unit_reference
+  return projected / np.linalg.norm(projected)
 
 
 class SphericalTessellation(Tessellation):
@@ -327,6 +346,271 @@ class SphericalTessellation(Tessellation):
       ))
 
     self._base_face_normals = np.array(base_face_normals, dtype=np.float64)
+
+  @override
+  def point_to_3d_position(self, point: IsometricPoint) -> np.ndarray:
+    """Returns the 3D world-space position of `point` on the sphere's surface.
+
+    Args:
+      point: A point whose grid is (or projects onto, via
+        `project_onto_root_grid`) one of this tessellation's own faces.
+
+    Returns:
+      A `(x, y, z)` position `self.radius` from `self.center`, in the
+      direction of `point`.
+    """
+    return (
+        np.array(self._center, dtype=np.float64)
+        + self._radius * self._point_to_3d_unit(point)
+    )
+
+  @override
+  def flatten_region(
+      self,
+      center: IsometricPoint,
+      targets: Sequence[IsometricPoint],
+      basis: tuple[np.ndarray, np.ndarray] | None = None,
+  ) -> list[tuple[float, float]]:
+    """Maps `targets` into an azimuthal-equidistant 2D projection centered
+    at `center` -- the sphere's exponential map, in closed form.
+
+    Args:
+      center: The point the flattened region is centered on.
+      targets: The points to flatten, in any order, anywhere on the mesh.
+      basis: An explicit `(e_x, e_y)` tangent basis (which direction is
+        "up" in the result) to project onto, e.g. one returned by
+        `unflatten_point_and_transport_basis` -- for a caller re-centering
+        on a moving point across many calls that wants the projection's
+        orientation to evolve continuously, without any net rotation
+        relative to the path traveled between one call and the next.
+        Defaults to a fresh `tangent_basis_at(center)` when omitted: an
+        arbitrary-but-stable convention that's still perfectly valid for
+        a single, one-off call, just not path-continuous across several.
+
+    Returns:
+      One `(x, y)` pair per point in `targets`, in the same order.
+
+    Raises:
+      ValueError: If any point in `targets` is antipodal to `center`,
+        whose direction from `center` is undefined.
+    """
+    if not targets:
+      return []
+
+    center_dir = self._point_to_3d_unit(center)
+    target_dirs = np.array(
+        [self._point_to_3d_unit(target) for target in targets],
+        dtype=np.float64)
+
+    cos_angle = np.clip(target_dirs @ center_dir, -1.0, 1.0)
+    angle = np.arccos(cos_angle)
+
+    tangent = target_dirs - np.outer(cos_angle, center_dir)
+    tangent_length = np.linalg.norm(tangent, axis=1)
+    if np.any((tangent_length < 1e-9) & (angle > 1e-9)):
+      raise ValueError(
+          "flatten_region: a target is antipodal to center, whose "
+          "direction from center is undefined.")
+    safe_length = np.where(tangent_length > 1e-12, tangent_length, 1.0)
+    tangent_unit = tangent / safe_length[:, np.newaxis]
+
+    e_x, e_y = basis if basis is not None else self._tangent_basis(center_dir)
+    x = angle * self._radius * (tangent_unit @ e_x)
+    y = angle * self._radius * (tangent_unit @ e_y)
+    return list(zip(x.tolist(), y.tolist()))
+
+  def tangent_basis_at(
+      self, point: IsometricPoint) -> tuple[np.ndarray, np.ndarray]:
+    """The default tangent basis `flatten_region`/`unflatten_point` use
+    at `point` when no explicit `basis` is given.
+
+    Exposed publicly so a caller establishing a *new* reference frame
+    (e.g. flat mode's first entry, before there's any prior basis to
+    carry forward) can fetch this starting basis to pass into later
+    `unflatten_point_and_transport_basis` calls.
+    """
+    return self._tangent_basis(self._point_to_3d_unit(point))
+
+  def unflatten_point(
+      self, center: IsometricPoint, x: float, y: float) -> IsometricPoint:
+    """The exact inverse of `flatten_region`: the point that `(x, y)`
+    (in `flatten_region`'s own output units and `(e_x, e_y)` convention)
+    represents, `center`'s exponential map rather than its log map.
+
+    Args:
+      center: The point `(x, y)` is relative to.
+      x: Offset along `_tangent_basis(center)`'s first axis.
+      y: Offset along `_tangent_basis(center)`'s second axis.
+
+    Returns:
+      The point at true geodesic distance `hypot(x, y)` from `center`, in
+      the direction `(x, y)` encodes. Returns `center` itself, unchanged,
+      when `(x, y)` is (numerically) the origin.
+    """
+    distance = math.hypot(x, y)
+    if distance < 1e-12:
+      return center
+
+    center_dir = self._point_to_3d_unit(center)
+    e_x, e_y = self._tangent_basis(center_dir)
+    tangent_dir = (x / distance) * e_x + (y / distance) * e_y
+    new_dir = self._walk_geodesic(
+        center_dir, tangent_dir, distance / self._radius)
+    return self._point_at_direction(new_dir)
+
+  def unflatten_point_and_transport_basis(
+      self,
+      center: IsometricPoint,
+      x: float,
+      y: float,
+      basis: tuple[np.ndarray, np.ndarray],
+  ) -> tuple[IsometricPoint, tuple[np.ndarray, np.ndarray]]:
+    """Like `unflatten_point`, but also parallel-transports `basis` (an
+    `(e_x, e_y)` tangent basis at `center`, in the same convention
+    `flatten_region`/`unflatten_point` use -- e.g. `tangent_basis_at`'s
+    own return value, or a previous call to this same method) along the
+    same geodesic to the resulting point.
+
+    `_tangent_basis` (via `tangent_basis_at`) is smooth in its input
+    direction, but it's still an *independent* recomputation from a
+    fixed external reference at every point -- nothing stops the "up"
+    direction it returns from slowly rotating relative to the direction
+    of travel as a caller re-centers on a continuously moving point
+    (e.g. `server.py`'s flat-mode panning). Exact parallel transport
+    along a geodesic has no such drift: it keeps a transported vector's
+    angle relative to the geodesic's own direction of travel exactly
+    constant. A caller threading `basis` through consecutive calls (each
+    call's returned `new_basis` becoming the next call's `basis`
+    argument) therefore gets a projection whose orientation evolves
+    continuously, without any net rotation relative to the path actually
+    traveled -- the visible "spinning" `_tangent_basis` alone doesn't
+    prevent.
+
+    Args:
+      center: The point `(x, y)` is relative to.
+      x: Offset along `basis[0]`.
+      y: Offset along `basis[1]`.
+      basis: The `(e_x, e_y)` tangent basis `(x, y)` is expressed in --
+        must be the same basis `flatten_region`/this method actually
+        used to produce whatever view `(x, y)` was measured against, or
+        the result won't correspond to the intended direction.
+
+    Returns:
+      `(new_point, new_basis)`: `new_point` is identical to what
+      `unflatten_point(center, x, y)` would return; `new_basis` is
+      `basis`'s own image under parallel transport, in the same
+      `(e_x, e_y)` shape, ready to pass into a later call to keep the
+      chain going. Returns `(center, basis)` unchanged when `(x, y)` is
+      (numerically) the origin.
+    """
+    distance = math.hypot(x, y)
+    center_dir = self._point_to_3d_unit(center)
+    if distance < 1e-12:
+      return center, basis
+
+    e_x, e_y = basis
+    tangent_dir = (x / distance) * e_x + (y / distance) * e_y
+    angle = distance / self._radius
+    new_dir = self._walk_geodesic(center_dir, tangent_dir, angle)
+    new_point = self._point_at_direction(new_dir)
+
+    # The great circle's own normal vector, fixed for the whole geodesic
+    # (see this method's docstring): a vector perpendicular to the
+    # direction of travel is parallel-transported unchanged, while the
+    # component along the direction of travel rotates to match the
+    # geodesic's own tangent at the new point -- `new_tangent_dir` below.
+    normal = np.cross(center_dir, tangent_dir)
+    new_tangent_dir = (
+        -math.sin(angle) * center_dir + math.cos(angle) * tangent_dir)
+
+    def transport(vector: np.ndarray) -> np.ndarray:
+      return (
+          np.dot(vector, tangent_dir) * new_tangent_dir
+          + np.dot(vector, normal) * normal
+      )
+
+    # Re-orthonormalize against `new_dir`, and against each other: this
+    # method is meant to be chained across many calls (see docstring),
+    # which is exactly the kind of repeated rotation composition that
+    # accumulates floating-point drift over time (the same reason a
+    # quaternion needs renormalizing after many multiplications) --
+    # without this correction, `new_e_x`/`new_e_y` slowly stop being
+    # exactly unit and perpendicular to `new_dir` and to each other.
+    new_e_x = _orthonormalize_against(transport(e_x), new_dir)
+    new_e_y = _orthonormalize_against(transport(e_y), new_dir)
+    new_e_y = _orthonormalize_against(new_e_y, new_e_x)
+    return new_point, (new_e_x, new_e_y)
+
+  def _walk_geodesic(
+      self, start_dir: np.ndarray, tangent_dir: np.ndarray, angle: float,
+  ) -> np.ndarray:
+    """The unit direction reached by walking `angle` radians along the
+    great circle through `start_dir` (a unit vector) in the initial
+    direction `tangent_dir` (a unit tangent vector at `start_dir`, i.e.
+    perpendicular to it).
+    """
+    new_dir = math.cos(angle) * start_dir + math.sin(angle) * tangent_dir
+    return new_dir / np.linalg.norm(new_dir)
+
+  def _point_at_direction(self, direction: np.ndarray) -> IsometricPoint:
+    """Resolves a unit direction from the sphere's center into the
+    `IsometricPoint` there."""
+    colatitude = math.acos(np.clip(direction[2], -1.0, 1.0))
+    longitude = math.atan2(direction[1], direction[0]) % (2.0 * math.pi)
+    return self.new_point_at_coords(colatitude, longitude)
+
+  def _tangent_basis(
+      self, direction: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """An arbitrary-but-stable orthonormal basis for the plane
+    perpendicular to `direction`, a unit vector.
+
+    Built by applying, to a fixed reference frame at the north pole
+    (`_REFERENCE_POLE`'s own `(_REFERENCE_E_X, _REFERENCE_E_Y)`), the
+    minimal rotation that takes the north pole to `direction` -- the
+    standard axis-angle (equivalently, quaternion) rotation formula.
+    Which reference frame is used isn't meaningful in itself -- it only
+    fixes an arbitrary "which way is up" convention for `flatten_region`'s
+    output.
+
+    The rotation-based construction does matter, though: it's smooth in
+    `direction` everywhere except `direction`'s exact antipode (the south
+    pole), where the rotation axis is undefined. That single point is an
+    unavoidable singularity (no continuous, non-vanishing tangent frame
+    can cover the whole sphere -- the "hairy ball theorem"), but it's a
+    single point rather than a whole neighborhood.
+
+    An earlier version of this method instead switched between two
+    reference vectors based on a proximity threshold, which made every
+    point within about 26 degrees of a pole discontinuous, causing a
+    visible jump in `flatten_region`'s orientation for centers panning
+    through that whole region -- rather than only (essentially never,
+    for floating-point-valued panning) the exact antipode.
+    """
+    axis = np.cross(_REFERENCE_POLE, direction)
+    axis_length = np.linalg.norm(axis)
+    cos_angle = np.dot(_REFERENCE_POLE, direction)
+
+    if axis_length < 1e-9:
+      if cos_angle > 0.0:
+        return _REFERENCE_E_X, _REFERENCE_E_Y  # direction ~= north pole
+      # direction ~= south pole, the sole singularity: the rotation axis
+      # is undefined, so break the tie with an arbitrary fixed axis.
+      axis_unit = np.array([1.0, 0.0, 0.0])
+      angle = math.pi
+    else:
+      axis_unit = axis / axis_length
+      angle = math.atan2(axis_length, cos_angle)
+
+    def rotate(vector: np.ndarray) -> np.ndarray:
+      """Rodrigues' rotation formula: `vector` rotated by `angle` around
+      `axis_unit`."""
+      return (
+          vector * math.cos(angle)
+          + np.cross(axis_unit, vector) * math.sin(angle)
+          + axis_unit * np.dot(axis_unit, vector) * (1.0 - math.cos(angle))
+      )
+
+    return rotate(_REFERENCE_E_X), rotate(_REFERENCE_E_Y)
 
   def _point_to_3d_unit(self, pt: IsometricPoint) -> np.ndarray:
     """Returns a unit vector pointing from the sphere's center toward `point`.
